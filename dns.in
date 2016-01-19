@@ -1,0 +1,9 @@
+2                       !nproc-y
+63 100 64       	!nx, ny, nz
+1.0d0 2.0d0    		!alfa0 beta0  
+4760    		!ni
+1.6d0 0.0d0 2.0d0       !a, ymin, ymax
+0.0d0 0.0d0  		!meanpx, meanpz
+1.3333d0 0.0d0 		!meanflowx meanflowz
+2.0d-2  0.0d0   0.0d0   !deltat, cflmax time
+0.0d0   1.0d2   1.0d-1  !dt_field, dt_dave, t_max
