@@ -7,7 +7,7 @@
 !                                            !
 !============================================!
 ! 
-! Author: M.Sc. Davide Gatti
+! Author: Dr. Davide Gatti
 ! Date  : 28/Jul/2015
 ! 
 
@@ -142,6 +142,22 @@ MODULE rbmat
     END DO
   END SUBROUTINE LeftLUdiv
 
+  !- Left LU division of a banded matrix -!
+  !---------------------------------------!
+  SUBROUTINE LeftLU5div(A,b)
+    complex(C_DOUBLE_COMPLEX), intent(inout)  :: b(:)
+    real(C_DOUBLE), intent(in)  :: A(:,-2:)
+    integer(C_INT) :: HI
+    HI=SIZE(A,1)
+    DO i=HI,1,-1
+      j=MIN(2,HI-i)
+      b(i)=(b(i)-sum(A(i,1:j)*b(i+1:i+j)))*A(i,0)
+    END DO
+    DO i=1,HI
+      j=MAX(-2,1-i)
+      b(i)=b(i)-sum(A(i,j:-1)*b(i+j:i-1))
+    END DO
+  END SUBROUTINE LeftLU5div
 
   !- Left LU division of a square matrix -!
   !----OPERATOR----Doolittle--------------!
@@ -216,8 +232,6 @@ MODULE rbmat
       x(i)=x(i)-sum(A(i,j:-1)*x(i+j:i-1))
     END DO
   END FUNCTION LLU5div
-
-
 
 
 

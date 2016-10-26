@@ -24,20 +24,12 @@ MODULE typedef
     real(C_DOUBLE), dimension(-2:2) :: d0,d1,d2,d4
   END TYPE Di
 
-  TYPE :: VELOCITY
-    complex(C_DOUBLE_COMPLEX) :: u,v,w
-  END TYPE VELOCITY
+  TYPE :: BCOND
+    complex(C_DOUBLE_COMPLEX) :: u,v,w,vy,eta
+  END TYPE BCOND
 
-  TYPE :: MOMFLUX
-    complex(C_DOUBLE_COMPLEX) :: uu,vv,ww,uv,vw,uw
-  END TYPE MOMFLUX
-
-  TYPE :: REALVELOCITY
-    real(C_DOUBLE) :: u,v,w
-  END TYPE REALVELOCITY
-
-  TYPE :: REALMOMFLUX
-    real(C_DOUBLE) :: uu,vv,ww,uv,vw,uw
-  END TYPE REALMOMFLUX
+  TYPE :: VETA 
+    complex(C_DOUBLE_COMPLEX) :: v,eta
+  END TYPE VETA
 
 END MODULE typedef

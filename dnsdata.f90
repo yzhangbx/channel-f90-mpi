@@ -7,9 +7,13 @@
 !                                            !
 !============================================!
 ! 
-! Author: M.Sc. Davide Gatti
+! Author: Dr.-Ing. Davide Gatti
 ! Date  : 28/Jul/2015
 ! 
+
+! Force (nxd,nzd) to be at most the product of a
+! power of 2 and a single factor 3.
+#define useFFTfit
 
 MODULE dnsdata
 
@@ -20,53 +24,82 @@ MODULE dnsdata
   IMPLICIT NONE
 
   !Simulation parameters
-  real(C_DOUBLE), parameter :: PI=3.1415926535897932384626433832795028841971
-  integer(C_INT), parameter :: nx=63, ny=100, nz=64, nxd=3*(nx+1)/2, nzd=3*nz
-  real(C_DOUBLE), parameter :: alfa0=1.0d0,beta0=2.0d0,ni=1.0d0/4760.0d0,tmax=100.0,a=1.6d0, ymin=0.0d0, ymax=2.0d0
-  integer(C_INT), private :: iy
-  real(C_DOUBLE) :: deltat=2.0d-2,cflmax=0.0,time=0,dt_field=0,dt_save=5.0,t_max=2.0d-1
-  real(C_DOUBLE) :: meanpx=0.0d0,meanpz=0.0d0,meanflowx=1.3333d0,meanflowz=0.0d0
+  real(C_DOUBLE) :: PI=3.1415926535897932384626433832795028841971
+  integer(C_INT) :: nx,ny,nz,nxd,nzd
+  real(C_DOUBLE) :: alfa0,beta0,ni,a,ymin,ymax,deltat,cflmax,time,dt_field,dt_save,t_max
+  real(C_DOUBLE) :: meanpx,meanpz,meanflowx,meanflowz
+  integer(C_INT), allocatable :: izd(:)
+  complex(C_DOUBLE_COMPLEX), allocatable :: ialfa(:),ibeta(:)
+  real(C_DOUBLE), allocatable :: k2(:,:)
   !Grid
-  real(C_DOUBLE), dimension(-1:ny+1), parameter :: &
-                  y=(/(ymin+0.5d0*(ymax-ymin)*(tanh(a*(2.0d0*real(iy)/real(ny)-1))/tanh(a)+0.5d0*(ymax-ymin)), iy=-1, ny+1)/)
-  real(C_DOUBLE), dimension(1:ny-1),  parameter :: dy=(/( 0.5d0*(y(iy+1)-y(iy-1)) , iy=1, ny-1)/)
-  real(C_DOUBLE), parameter :: dx=PI/(alfa0*nxd), dz=2.0d0*PI/(beta0*nzd),  factor=1.0d0/(2.0d0*nxd*nzd)
+  integer(C_INT), private :: iy
+  real(C_DOUBLE), allocatable :: y(:),dy(:)
+  real(C_DOUBLE) :: dx,dz,factor
   !Derivatives
-  TYPE(Di), dimension(1:ny-1) :: der
+  TYPE(Di), allocatable :: der(:)
   real(C_DOUBLE), dimension(-2:2) :: d040,d140,d14m1,d04n,d14n,d24n,d14np1
-  real(C_DOUBLE), dimension(1:ny-1,-2:2) :: D0mat, etamat, D2vmat
+  real(C_DOUBLE), allocatable :: D0mat(:,:), etamat(:,:), D2vmat(:,:)
   !Fourier-transformable arrays (allocated in ffts.f90)
-  complex(C_DOUBLE_COMPLEX), pointer, dimension(:,:,:) ::  VVdx,VVdz   
-  real(C_DOUBLE), pointer, dimension(:,:,:) :: rVVdx
+  complex(C_DOUBLE_COMPLEX), pointer, dimension(:,:,:,:) :: VVdx, VVdz
+  real(C_DOUBLE), pointer, dimension(:,:,:,:) :: rVVdx
   !Solution
-  TYPE(RHSTYPE),  allocatable :: newrhs(:,:,:), oldrhs(:,:,:)
-  TYPE(MOMFLUX),  allocatable :: VV(:,:,:)                    
-  TYPE(VELOCITY), allocatable :: V(:,:,:)                     
+  TYPE(RHSTYPE),  allocatable :: memrhs(:,:,:), oldrhs(:,:,:)
+  complex(C_DOUBLE_COMPLEX), allocatable :: V(:,:,:,:)
   !Boundary conditions
   real(C_DOUBLE), dimension(-2:2) :: v0bc,v0m1bc,vnbc,vnp1bc,eta0bc,eta0m1bc,etanbc,etanp1bc
-  !ODE library coefficients
-  real(C_DOUBLE), parameter :: CN_AB_coeff=2.0d0
-  real(C_DOUBLE), parameter :: RK1_rai_coeff=120.0d0/32.0d0, RK2_rai_coeff=120.0d0/8.0d0, RK3_rai_coeff=120.0d0/20.0d0
+  TYPE(BCOND),    allocatable :: bc0(:,:), bcn(:,:)
+  !Mean pressure correction
+  real(C_DOUBLE), private :: corrpx=0.d0, corrpz=0.d0
+  !ODE Library
+  real(C_DOUBLE) :: RK1_rai(1:3)=(/ 120.0d0/32.0d0, 2.0d0, 0.0d0 /), &
+                    RK2_rai(1:3)=(/ 120.0d0/8.0d0,  50.0d0/8.0d0,  34.0d0/8.0d0 /), &
+                    RK3_rai(1:3)=(/ 120.0d0/20.0d0, 90.0d0/20.0d0, 50.0d0/20.0d0 /)
   !Outstats
   real(C_DOUBLE) :: cfl=0.0d0
+  !Non-blocking communication
 
   CONTAINS
 
   !--------------------------------------------------------------!
+  !---------------------- Read input files ----------------------!
+  SUBROUTINE read_dnsin()
+    logical :: i
+    OPEN(15, file='dns.in')
+    READ(15, *) nx, ny, nz; READ(15, *) alfa0, beta0; nxd=3*(nx+1)/2;nzd=3*nz
+#ifdef useFFTfit
+    i=fftFIT(nxd); DO WHILE (.NOT. i); nxd=nxd+1; i=fftFIT(nxd); END DO
+    i=fftFIT(nzd); DO WHILE (.NOT. i); nzd=nzd+1; i=fftFIT(nzd); END DO
+#endif
+    READ(15, *) ni; READ(15, *) a, ymin, ymax; ni=1/ni
+    READ(15, *) meanpx, meanpz; READ(15, *) meanflowx, meanflowz
+    READ(15, *) deltat, cflmax, time
+    READ(15, *) dt_field, dt_save, t_max
+    CLOSE(15)
+    dx=PI/(alfa0*nxd); dz=2.0d0*PI/(beta0*nzd);  factor=1.0d0/(2.0d0*nxd*nzd)
+  END SUBROUTINE read_dnsin
+
+  !--------------------------------------------------------------!
   !---------------- Allocate memory for solution ----------------!
   SUBROUTINE init_memory()
-    ALLOCATE(V(-1:ny+1,-nz:nz,nx0:nxN))
-    ALLOCATE(VV(-2:2,-nz:nz,nx0:nxN))
-    ALLOCATE(newrhs(-2:0,-nz:nz,nx0:nxN))
-    ALLOCATE(oldrhs(-1:ny+1,-nz:nz,nx0:nxN))
+    INTEGER(C_INT) :: ix,iz
+    ALLOCATE(V(-1:ny+1,-nz:nz,nx0:nxN,1:3))
+    ALLOCATE(memrhs(0:2,-nz:nz,nx0:nxN),oldrhs(1:ny-1,-nz:nz,nx0:nxN),bc0(-nz:nz,nx0:nxN),bcn(-nz:nz,nx0:nxN))
+#define newrhs(iy,iz,ix) memrhs(MOD(iy+1000,3),iz,ix)
+#define imod(iy) MOD(iy+1000,5)
+    ALLOCATE(der(1:ny-1),d0mat(1:ny-1,-2:2),etamat(1:ny-1,-2:2),D2vmat(1:ny-1,-2:2),y(-1:ny+1),dy(1:ny-1))
+    ALLOCATE(izd(-nz:nz),ialfa(nx0:nxN),ibeta(-nz:nz),k2(-nz:nz,nx0:nxN))
+    y=(/(ymin+0.5d0*(ymax-ymin)*(tanh(a*(2.0d0*real(iy)/real(ny)-1))/tanh(a)+0.5d0*(ymax-ymin)), iy=-1, ny+1)/)
+    dy=(/( 0.5d0*(y(iy+1)-y(iy-1)) , iy=1, ny-1)/)
+    izd=(/(merge(iz,nzd+iz,iz>=0),iz=-nz,nz)/);     ialfa=(/(dcmplx(0.0d0,ix*alfa0),ix=nx0,nxN)/);
+    ibeta=(/(dcmplx(0.0d0,iz*beta0),iz=-nz,nz)/); 
+    FORALL  (iz=-nz:nz,ix=nx0:nxN) k2(iz,ix)=(alfa0*ix)**2.0d0+(beta0*iz)**2.0d0
   END SUBROUTINE init_memory
 
   !--------------------------------------------------------------!
   !--------------- Deallocate memory for solution ---------------!
   SUBROUTINE free_memory()
-    DEALLOCATE(V,VV,newrhs,oldrhs)
+    DEALLOCATE(V,memrhs,oldrhs,der,bc0,bcn,d0mat,etamat,D2vmat,y,dy)
   END SUBROUTINE free_memory
-
 
   !--------------------------------------------------------------!
   !--------------- Set-up the compact derivatives ---------------!
@@ -128,19 +161,14 @@ MODULE dnsdata
     END DO
   END FUNCTION yintegr
 
-#define rD0(f,g,k) dcmplx(sum(der(iy)%d0(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%g)) ,sum(der(iy)%d0(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%k)))
-#define rD1(f,g,k) dcmplx(sum(der(iy)%d1(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%g)) ,sum(der(iy)%d1(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%k)))
-#define rD2(f,g,k) dcmplx(sum(der(iy)%d2(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%g)) ,sum(der(iy)%d2(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%k)))
-#define rD4(f,g,k) dcmplx(sum(der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%g)) ,sum(der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%k)))
-#define D0(f,g) dcmplx(sum(der(iy)%d0(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%g)) ,sum(der(iy)%d0(-2:2)*dimag(f(iy-2:iy+2,iz,ix)%g)))
-#define D1(f,g) dcmplx(sum(der(iy)%d1(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%g)) ,sum(der(iy)%d1(-2:2)*dimag(f(iy-2:iy+2,iz,ix)%g)))
-#define D2(f,g) dcmplx(sum(der(iy)%d2(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%g)) ,sum(der(iy)%d2(-2:2)*dimag(f(iy-2:iy+2,iz,ix)%g)))
-#define D4(f,g) dcmplx(sum(der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,iz,ix)%g)) ,sum(der(iy)%d4(-2:2)*dimag(f(iy-2:iy+2,iz,ix)%g)))
-#define iD0(g) dcmplx(sum(der(iy)%d0(-2:2)*dreal(VV(-2:2,iz,ix)%g)) ,sum(der(iy)%d0(-2:2)*dimag(VV(-2:2,iz,ix)%g)))
-#define iD1(g) dcmplx(sum(der(iy)%d1(-2:2)*dreal(VV(-2:2,iz,ix)%g)) ,sum(der(iy)%d1(-2:2)*dimag(VV(-2:2,iz,ix)%g)))
-#define iD2(g) dcmplx(sum(der(iy)%d2(-2:2)*dreal(VV(-2:2,iz,ix)%g)) ,sum(der(iy)%d2(-2:2)*dimag(VV(-2:2,iz,ix)%g)))
-#define iD4(g) dcmplx(sum(der(iy)%d4(-2:2)*dreal(VV(-2:2,iz,ix)%g)) ,sum(der(iy)%d4(-2:2)*dimag(VV(-2:2,iz,ix)%g)))
-
+#define rD0(f,g,k) sum(dcmplx(der(iy)%d0(-2:2)*dreal(f(iy-2:iy+2,iz,ix,g)) ,der(iy)%d0(-2:2)*dreal(f(iy-2:iy+2,iz,ix,k))))
+#define rD1(f,g,k) sum(dcmplx(der(iy)%d1(-2:2)*dreal(f(iy-2:iy+2,iz,ix,g)) ,der(iy)%d1(-2:2)*dreal(f(iy-2:iy+2,iz,ix,k))))
+#define rD2(f,g,k) sum(dcmplx(der(iy)%d2(-2:2)*dreal(f(iy-2:iy+2,iz,ix,g)) ,der(iy)%d2(-2:2)*dreal(f(iy-2:iy+2,iz,ix,k))))
+#define rD4(f,g,k) sum(dcmplx(der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,iz,ix,g)) ,der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,iz,ix,k))))
+#define D0(f,g) sum(dcmplx(der(iy)%d0(-2:2)*dreal(f(iy-2:iy+2,iz,ix,g)) ,der(iy)%d0(-2:2)*dimag(f(iy-2:iy+2,iz,ix,g))))
+#define D1(f,g) sum(dcmplx(der(iy)%d1(-2:2)*dreal(f(iy-2:iy+2,iz,ix,g)) ,der(iy)%d1(-2:2)*dimag(f(iy-2:iy+2,iz,ix,g))))
+#define D2(f,g) sum(dcmplx(der(iy)%d2(-2:2)*dreal(f(iy-2:iy+2,iz,ix,g)) ,der(iy)%d2(-2:2)*dimag(f(iy-2:iy+2,iz,ix,g))))
+#define D4(f,g) sum(dcmplx(der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,iz,ix,g)) ,der(iy)%d4(-2:2)*dimag(f(iy-2:iy+2,iz,ix,g))))
   !--------------------------------------------------------------!
   !---COMPLEX----- derivative in the y-direction ----------------!
   SUBROUTINE COMPLEXderiv(f0,f1)
@@ -150,265 +178,249 @@ MODULE dnsdata
     f1(-1)=sum(d14m1(-2:2)*f0(-1:3))
     f1(ny)=sum(d14n(-2:2)*f0(ny-3:ny+1))
     f1(ny+1)=sum(d14np1(-2:2)*f0(ny-3:ny+1))
-    DO iy=1,ny-1
-      f1(iy)=dcmplx(sum(der(iy)%d1(-2:2)*dreal(f0(iy-2:iy+2))) ,sum(der(iy)%d1(-2:2)*dimag(f0(iy-2:iy+2))))
+    DO CONCURRENT (iy=1:ny-1)
+      f1(iy)=sum(der(iy)%d1(-2:2)*f0(iy-2:iy+2))
     END DO
     f1(1)=f1(1)-(der(1)%d0(-1)*f1(0)+der(1)%d0(-2)*f1(-1))
     f1(2)=f1(2)-der(2)%d0(-2)*f1(0)
     f1(ny-1)=f1(ny-1)-(der(ny-1)%d0(1)*f1(ny)+der(ny-1)%d0(2)*f1(ny+1))
     f1(ny-2)=f1(ny-2)-der(ny-2)%d0(2)*f1(ny)
-    f1(1:ny-1)=dcmplx(D0mat.bsr.dreal(f1(1:ny-1)),D0mat.bsr.dimag(f1(1:ny-1)))
+    !f1(1:ny-1)=dcmplx(D0mat.bsr.dreal(f1(1:ny-1)),D0mat.bsr.dimag(f1(1:ny-1)))
+    CALL LeftLU5div(D0mat,f1(1:ny-1))
   END SUBROUTINE COMPLEXderiv
 
   !--------------------------------------------------------------!
   !----------------- apply the boundary conditions --------------!
-  SUBROUTINE applybc_0(EQ,bc0,bc0m1,RHS,rhs0,rhs0m1)
+  PURE SUBROUTINE applybc_0(EQ,bc0,bc0m1)
     real(C_DOUBLE), intent(inout) :: EQ(1:ny-1,-2:2)
     real(C_DOUBLE), intent(in) :: bc0(-2:2),bc0m1(-2:2)
-    complex(C_DOUBLE_COMPLEX), intent(in) :: rhs0,rhs0m1
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: RHS(-1:ny+1)
     EQ(1,-1:2)=EQ(1,-1:2)-EQ(1,-2)*bc0m1(-1:2)/bc0m1(-2)
     EQ(1, 0:2)=EQ(1, 0:2)-EQ(1,-1)*bc0(0:2)/bc0(-1)
     EQ(2,-1:1)=EQ(2,-1:1)-EQ(2,-2)*bc0(0:2)/bc0(-1)
-    RHS(1)=RHS(1)-EQ(1,-2)*rhs0m1/bc0m1(-2)
-    RHS(1)=RHS(1)-EQ(1,-1)*rhs0/bc0(-1)
-    RHS(2)=RHS(2)-EQ(2,-2)*rhs0/bc0(-1)
   END SUBROUTINE applybc_0
 
-  SUBROUTINE applybc_n(EQ,bcn,bcnp1,RHS,rhsn,rhsnp1)
+  PURE SUBROUTINE applybc_n(EQ,bcn,bcnp1)
     real(C_DOUBLE), intent(inout) :: EQ(1:ny-1,-2:2)
     real(C_DOUBLE), intent(in) :: bcn(-2:2),bcnp1(-2:2)
-    complex(C_DOUBLE_COMPLEX), intent(in) :: rhsn,rhsnp1
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: RHS(-1:ny+1)
     EQ(ny-1,-2:1)=EQ(ny-1,-2:1)-EQ(ny-1,2)*bcnp1(-2:1)/bcnp1(2)
     EQ(ny-1,-2:0)=EQ(ny-1,-2:0)-EQ(ny-1,1)*bcn(-2:0)/bcn(1)
     EQ(ny-2,-1:1)=EQ(ny-2,-1:1)-EQ(ny-2,2)*bcn(-2:0)/bcn(1)
-    RHS(ny-1)=RHS(ny-1)-EQ(ny-1,2)*rhsnp1/bcnp1(2)
-    RHS(ny-1)=RHS(ny-1)-EQ(ny-1,1)*rhsn/bcn(1)
-    RHS(ny-2)=RHS(ny-2)-EQ(ny-2,2)*rhsn/bcn(1)
   END SUBROUTINE applybc_n
 
 
-#define OS(iy,j) (ni*(der(iy)%d4(j)-2.0d0*k2*der(iy)%d2(j)+k2*k2*der(iy)%d0(j)))
-#define SQ(iy,j) (ni*(der(iy)%d2(j)-k2*der(iy)%d0(j)))
+#define OS(iy,j) (ni*(der(iy)%d4(j)-2.0d0*k2(iz,ix)*der(iy)%d2(j)+k2(iz,ix)*k2(iz,ix)*der(iy)%d0(j)))
+#define SQ(iy,j) (ni*(der(iy)%d2(j)-k2(iz,ix)*der(iy)%d0(j)))
   !--------------------------------------------------------------!
   !------------------- solve the linear system  -----------------!
   SUBROUTINE linsolve(lambda)
     real(C_DOUBLE), intent(in) :: lambda
-    complex(C_DOUBLE_COMPLEX) :: A0,B0,An,Bn
     integer(C_INT) :: ix,iz
-    complex(C_DOUBLE_COMPLEX) :: ialfa,ibeta,temp(-1:ny+1)
-    real(C_DOUBLE) :: k2
+    complex(C_DOUBLE_COMPLEX) :: temp(-1:ny+1)
     real(C_DOUBLE) :: ucor(-1:ny+1)
-    DO ix=nx0,nxN
-      ialfa=dcmplx(0.0d0,alfa0*ix)
-      DO iz=-nz,nz
-        A0=0; An=A0; B0=0; Bn=0; 
-        A0=A0-v0bc(-2)*B0/v0m1bc(-2); An=An-vnbc(2)*Bn/vnp1bc(2);
-        ibeta=dcmplx(0.0d0,beta0*iz); k2=(alfa0*ix)**2.0d0+(beta0*iz)**2.0d0
-        DO iy=1,ny-1
-          D2vmat(iy,-2:2)=lambda*(der(iy)%d2(-2:2)-k2*der(iy)%d0(-2:2))-OS(iy,-2:2)
-          etamat(iy,-2:2)=lambda*der(iy)%d0(-2:2)-SQ(iy,-2:2) 
+    DO iz=-nz,nz
+      DO ix=nx0,nxN
+        IF (ix==0 .AND. iz==0) THEN
+          bc0(iz,ix)%v=0; bc0(iz,ix)%vy=0; bc0(iz,ix)%eta=dcmplx(dreal(bc0(iz,ix)%u)-dimag(bc0(iz,ix)%w),dimag(bc0(iz,ix)%u)+dreal(bc0(iz,ix)%w))
+          bcn(iz,ix)%v=0; bcn(iz,ix)%vy=0; bcn(iz,ix)%eta=dcmplx(dreal(bcn(iz,ix)%u)-dimag(bcn(iz,ix)%w),dimag(bcn(iz,ix)%u)+dreal(bcn(iz,ix)%w))
+        ELSE
+          bc0(iz,ix)%vy=-ialfa(ix)*bc0(iz,ix)%u-ibeta(iz)*bc0(iz,ix)%w; bc0(iz,ix)%eta=ibeta(iz)*bc0(iz,ix)%u-ialfa(ix)*bc0(iz,ix)%w
+          bcn(iz,ix)%vy=-ialfa(ix)*bcn(iz,ix)%u-ibeta(iz)*bcn(iz,ix)%w; bcn(iz,ix)%eta=ibeta(iz)*bcn(iz,ix)%u-ialfa(ix)*bcn(iz,ix)%w
+        END IF
+        bc0(iz,ix)%v=bc0(iz,ix)%v-v0bc(-2)*bc0(iz,ix)%vy/v0m1bc(-2)
+        bcn(iz,ix)%v=bcn(iz,ix)%v-vnbc(2)*bcn(iz,ix)%vy/vnp1bc(2)
+        DO CONCURRENT (iy=1:ny-1)
+          D2vmat(iy,-2:2)=lambda*(der(iy)%d2(-2:2)-k2(iz,ix)*der(iy)%d0(-2:2))-OS(iy,-2:2)
+          etamat(iy,-2:2)=lambda*der(iy)%d0(-2:2)-SQ(iy,-2:2)
         END DO
-        CALL applybc_0(D2vmat,v0bc,v0m1bc,V(:,iz,ix)%v,A0,B0)
-        CALL applybc_n(D2vmat,vnbc,vnp1bc,V(:,iz,ix)%v,An,Bn)
-        CALL applybc_0(etamat,eta0bc,eta0m1bc,V(:,iz,ix)%u,(0.0D0,0.0D0),(0.0D0,0.0D0))
-        CALL applybc_n(etamat,etanbc,etanp1bc,V(:,iz,ix)%u,(0.0D0,0.0D0),(0.0D0,0.0D0))
+        CALL applybc_0(D2vmat,v0bc,v0m1bc)
+        CALL applybc_n(D2vmat,vnbc,vnp1bc)
+        V(1,iz,ix,2)=V(1,iz,ix,2)-D2vmat(1,-2)*bc0(iz,ix)%vy/v0m1bc(-2)-D2vmat(1,-1)*bc0(iz,ix)%v/v0bc(-1)
+        V(2,iz,ix,2)=V(2,iz,ix,2)-D2vmat(2,-2)*bc0(iz,ix)%v/v0bc(-1)       
+        V(ny-1,iz,ix,2)=V(ny-1,iz,ix,2)-D2vmat(ny-1,2)*bcn(iz,ix)%vy/vnp1bc(2)-D2vmat(ny-1,1)*bcn(iz,ix)%v/vnbc(1)
+        V(ny-2,iz,ix,2)=V(ny-2,iz,ix,2)-D2vmat(ny-2,2)*bcn(iz,ix)%v/vnbc(1)
+        CALL applybc_0(etamat,eta0bc,eta0m1bc)
+        CALL applybc_n(etamat,etanbc,etanp1bc)
+        V(1,iz,ix,1)=V(1,iz,ix,1)-etamat(1,-1)*bc0(iz,ix)%eta/eta0bc(-1)
+        V(2,iz,ix,1)=V(2,iz,ix,1)-etamat(2,-2)*bc0(iz,ix)%eta/eta0bc(-1)
+        V(ny-1,iz,ix,1)=V(ny-1,iz,ix,1)-etamat(ny-1,1)*bcn(iz,ix)%eta/etanbc(1)
+        V(ny-2,iz,ix,1)=V(ny-2,iz,ix,1)-etamat(ny-2,2)*bcn(iz,ix)%eta/etanbc(1)
         CALL LU5decomp(D2vmat); CALL LU5decomp(etamat)
-        V(1:ny-1,iz,ix)%v=dcmplx(D2vmat.bsr.dreal(V(1:ny-1,iz,ix)%v), D2vmat.bsr.dimag(V(1:ny-1,iz,ix)%v))
-        V(0,iz,ix)%v=(A0-sum(V(1:3,iz,ix)%v*v0bc(0:2)))/v0bc(-1)
-        V(-1,iz,ix)%v=(B0-sum(V(0:3,iz,ix)%v*v0m1bc(-1:2)))/v0m1bc(-2)
-        V(ny,iz,ix)%v=(An-sum(V(ny-3:ny-1,iz,ix)%v*vnbc(-2:0)))/vnbc(1)
-        V(ny+1,iz,ix)%v=(Bn-sum(V(ny-3:ny,iz,ix)%v*vnp1bc(-2:1)))/vnp1bc(2)
-        V(1:ny-1,iz,ix)%u=dcmplx(etamat.bsr.dreal(V(1:ny-1,iz,ix)%u), etamat.bsr.dimag(V(1:ny-1,iz,ix)%u))
-        V(0,iz,ix)%u=-sum(V(1:3,iz,ix)%u*eta0bc(0:2))/eta0bc(-1)
-        V(-1,iz,ix)%u=-sum(V(0:3,iz,ix)%u*eta0m1bc(-1:2))/eta0m1bc(-2)
-        V(ny,iz,ix)%u=-sum(V(ny-3:ny-1,iz,ix)%u*etanbc(-2:0))/etanbc(1)
-        V(ny+1,iz,ix)%u=-sum(V(ny-3:ny,iz,ix)%u*etanp1bc(-2:1))/etanp1bc(2)
-        IF (ix==0 .AND. iz==0) THEN 
-          IF (abs(meanflowx)>0) THEN
-            ucor=1
+        CALL LeftLU5div(D2vmat,V(1:ny-1,iz,ix,2))
+        V(0,iz,ix,2)=(bc0(iz,ix)%v-sum(V(1:3,iz,ix,2)*v0bc(0:2)))/v0bc(-1)
+        V(-1,iz,ix,2)=(bc0(iz,ix)%vy-sum(V(0:3,iz,ix,2)*v0m1bc(-1:2)))/v0m1bc(-2)
+        V(ny,iz,ix,2)=(bcn(iz,ix)%v-sum(V(ny-3:ny-1,iz,ix,2)*vnbc(-2:0)))/vnbc(1)
+        V(ny+1,iz,ix,2)=(bcn(iz,ix)%vy-sum(V(ny-3:ny,iz,ix,2)*vnp1bc(-2:1)))/vnp1bc(2)
+        CALL LeftLU5div(etamat,V(1:ny-1,iz,ix,1))
+        V(0,iz,ix,1)=(bc0(iz,ix)%eta-sum(V(1:3,iz,ix,1)*eta0bc(0:2)))/eta0bc(-1)
+        V(-1,iz,ix,1)=-sum(V(0:3,iz,ix,1)*eta0m1bc(-1:2))/eta0m1bc(-2)
+        V(ny,iz,ix,1)=(bcn(iz,ix)%eta-sum(V(ny-3:ny-1,iz,ix,1)*etanbc(-2:0)))/etanbc(1)
+        V(ny+1,iz,ix,1)=-sum(V(ny-3:ny,iz,ix,1)*etanp1bc(-2:1))/etanp1bc(2)
+        IF (ix==0 .AND. iz==0) THEN
+            V(:,0,0,3) = dcmplx(dimag(V(:,0,0,1)),0.d0); 
+            V(:,0,0,1) = dcmplx(dreal(V(:,0,0,1)),0.d0); 
+            ucor(-1:0)=0; ucor(1:ny-1)=1; ucor(ny:ny+1)=0
             ucor(1:ny-1)=etamat.bsr.ucor(1:ny-1)
             ucor(0)=-sum(ucor(1:3)*eta0bc(0:2))/eta0bc(-1)
             ucor(-1)=-sum(ucor(0:3)*eta0m1bc(-1:2))/eta0m1bc(-2)
             ucor(ny)=-sum(ucor(ny-3:ny-1)*etanbc(-2:0))/etanbc(1)
-            ucor(ny+1)=-sum(ucor(ny-3:ny)*etanp1bc(-2:1))/etanp1bc(2)
-            V(:,0,0)%u=dcmplx(dreal(V(:,0,0)%u)+(meanflowx-yintegr(dreal(V(:,0,0)%u)))/yintegr(ucor)*ucor,dimag(V(:,0,0)%u))
-            V(:,0,0)%w=dcmplx(dreal(V(:,0,0)%w)+(meanflowz-yintegr(dreal(V(:,0,0)%w)))/yintegr(ucor)*ucor,dimag(V(:,0,0)%w))
-          END IF
+            ucor(ny+1)=-sum(ucor(ny-3:ny)*etanp1bc(-2:1))/etanp1bc(2)          
+            IF (abs(meanflowx)>1.0d-7) THEN
+              corrpx = (meanflowx-yintegr(dreal(V(:,0,0,1))))/yintegr(ucor)
+              V(:,0,0,1)=dcmplx(dreal(V(:,0,0,1))+corrpx*ucor,dimag(V(:,0,0,1)))
+            END IF
+            IF (abs(meanflowz)>1.0d-7) THEN
+              corrpz = (meanflowz-yintegr(dreal(V(:,0,0,3))))/yintegr(ucor)
+              V(:,0,0,3)=dcmplx(dreal(V(:,0,0,3))+corrpz*ucor,dimag(V(:,0,0,3)))
+            END IF
         ELSE
-            CALL COMPLEXderiv(V(:,iz,ix)%v,V(:,iz,ix)%w)
-            temp=(ialfa*V(:,iz,ix)%w-ibeta*V(:,iz,ix)%u)/k2
-            V(:,iz,ix)%w=(ibeta*V(:,iz,ix)%w+ialfa*V(:,iz,ix)%u)/k2
-            V(:,iz,ix)%u=temp
+            CALL COMPLEXderiv(V(:,iz,ix,2),V(:,iz,ix,3))
+            temp=(ialfa(ix)*V(:,iz,ix,3)-ibeta(iz)*V(:,iz,ix,1))/k2(iz,ix)
+            V(:,iz,ix,3)=(ibeta(iz)*V(:,iz,ix,3)+ialfa(ix)*V(:,iz,ix,1))/k2(iz,ix)
+            V(:,iz,ix,1)=temp
         END IF
       END DO
     END DO
   END SUBROUTINE linsolve
 
-  !--------------------------------------------------------------!
-  !------------------------ convolutions ------------------------!
+   !--------------------------------------------------------------!
+   !------------------------ convolutions ------------------------!
   SUBROUTINE convolutions(iy,i,compute_cfl)
-    integer(C_INT), intent(in) :: iy,i
+     integer(C_INT), intent(in) :: iy,i
+     logical, intent(in) :: compute_cfl
+     integer(C_INT) :: ix,iz,iV
+     VVdz(1:nz+1,1:nxB,1:3,i)=V(iy,0:nz,nx0:nxN,1:3);         VVdz(nz+2:nzd-nz,1:nxB,1:3,i)=0;
+     VVdz(nzd+1-nz:nzd,1:nxB,1:3,i)=V(iy,-nz:-1,nx0:nxN,1:3); 
+     DO iV=1,3
+       CALL IFT(VVdz(1:nzd,1:nxB,iV,i)); CALL MPI_Alltoall(VVdz(:,:,iV,i), 1, Mdz, VVdx(:,:,iV,i), 1, Mdx, MPI_COMM_WORLD)
+       VVdx(nx+2:nxd+1,1:nzB,iV,i)=0;    CALL RFT(VVdx(1:nxd+1,1:nzB,iV,i),rVVdx(1:2*nxd+2,1:nzB,iV,i));
+     END DO
+     VVdx(nx+2:nxd+1,1:nzB,4:6,i)=0;
+     IF (compute_cfl .and. iy>=1 .and. iy<=ny-1) THEN
+           cfl=max(cfl,(maxval(abs(rVVdx(1:2*nxd,1:nzB,1,i))/dx     + &
+                               abs(rVVdx(1:2*nxd,1:nzB,2,i))/dy(iy) + &
+                               abs(rVVdx(1:2*nxd,1:nzB,3,i))/dz)))
+     END IF
+     rVVdx(1:2*nxd,1:nzB,4,i)  = rVVdx(1:2*nxd,1:nzB,1,i)  * rVVdx(1:2*nxd,1:nzB,2,i)*factor
+     rVVdx(1:2*nxd,1:nzB,5,i)  = rVVdx(1:2*nxd,1:nzB,2,i)  * rVVdx(1:2*nxd,1:nzB,3,i)*factor
+     rVVdx(1:2*nxd,1:nzB,6,i)  = rVVdx(1:2*nxd,1:nzB,1,i)  * rVVdx(1:2*nxd,1:nzB,3,i)*factor
+     rVVdx(1:2*nxd,1:nzB,1:3,i)= rVVdx(1:2*nxd,1:nzB,1:3,i)* rVVdx(1:2*nxd,1:nzB,1:3,i)*factor
+     DO iV=1,6
+       CALL HFT(rVVdx(1:2*nxd+2,1:nzB,iV,i),VVdx(1:nxd+1,1:nzB,iV,i)); 
+       CALL MPI_Alltoall(VVdx(:,:,iV,i), 1, Mdx, VVdz(:,:,iV,i), 1, Mdz, MPI_COMM_WORLD)
+       CALL FFT(VVdz(1:nzd,1:nxB,iV,i));
+     END DO
+   END SUBROUTINE convolutions
+
+
+  !--------------------------------------------------------------!
+  !-------------------------- buildRHS --------------------------!
+  ! (u,v,w) = (1,2,3)
+  ! (uu,vv,ww,uv,vw,uw) = (1,2,3,4,5,6)
+#define DD(f,k) ( der(iy)%f(-2)*VVdz(izd(iz)+1,ix+1-nx0,k,im2)+der(iy)%f(-1)*VVdz(izd(iz)+1,ix+1-nx0,k,im1)+der(iy)%f(0)*VVdz(izd(iz)+1,ix+1-nx0,k,i0)+ \
+                  der(iy)%f(1 )*VVdz(izd(iz)+1,ix+1-nx0,k,i1 )+der(iy)%f(2 )*VVdz(izd(iz)+1,ix+1-nx0,k,i2 ) )
+#define timescheme(rhs,old,unkn,impl,expl) rhs=ODE(1)*(unkn)/deltat+(impl)+ODE(2)*(expl)-ODE(3)*(old); old=expl                   
+  SUBROUTINE buildrhs(ODE,compute_cfl)
     logical, intent(in) :: compute_cfl
-    integer(C_INT) :: ix,iz
-    VVdz=0; VVdx=0 ! Optimize this
-    VVdz(1,1:nz+1,1:nxB)=V(iy,0:nz,nx0:nxN)%u;         VVdz(2,1:nz+1,1:nxB)=V(iy,0:nz,nx0:nxN)%v;         VVdz(3,1:nz+1,1:nxB)=V(iy,0:nz,nx0:nxN)%w
-    VVdz(1,nzd+1-nz:nzd,1:nxB)=V(iy,-nz:-1,nx0:nxN)%u; VVdz(2,nzd+1-nz:nzd,1:nxB)=V(iy,-nz:-1,nx0:nxN)%v; VVdz(3,nzd+1-nz:nzd,1:nxB)=V(iy,-nz:-1,nx0:nxN)%w
-    DO ix=1,nxB
-      CALL IFT(VVdz(1:6,1:nzd,ix)); 
-    END DO
-    CALL MPI_Alltoall(VVdz, 1, Mdz3, VVdx, 1, Mdx3, MPI_COMM_WORLD)
-    DO iz=1,nzB
-      CALL RFT(VVdx(1:6,1:nxd+1,iz),rVVdx(1:6,1:2*nxd+2,iz)); 
-    END DO
-    IF (compute_cfl .and. iy<ny) THEN 
-          cfl=max(cfl,(maxval(abs(rVVdx(1,1:2*nxd,1:nzB)))/dx + &
-                       maxval(abs(rVVdx(2,1:2*nxd,1:nzB)))/dy(iy) +  &
-                       maxval(abs(rVVdx(3,1:2*nxd,1:nzB)))/dz)) ! CFL
-    END IF
-    rVVdx(4  ,1:2*nxd,1:nzB)=rVVdx(1  ,1:2*nxd,1:nzB)*rVVdx(2  ,1:2*nxd,1:nzB)*factor
-    rVVdx(5  ,1:2*nxd,1:nzB)=rVVdx(2  ,1:2*nxd,1:nzB)*rVVdx(3  ,1:2*nxd,1:nzB)*factor
-    rVVdx(6  ,1:2*nxd,1:nzB)=rVVdx(1  ,1:2*nxd,1:nzB)*rVVdx(3  ,1:2*nxd,1:nzB)*factor
-    rVVdx(1:3,1:2*nxd,1:nzB)=rVVdx(1:3,1:2*nxd,1:nzB)*rVVdx(1:3,1:2*nxd,1:nzB)*factor
-    DO iz=1,nzB
-      CALL HFT(rVVdx(1:6,1:2*nxd+2,iz),VVdx(1:6,1:nxd+1,iz)); 
-    END DO
-    CALL MPI_Alltoall(VVdx, 1, Mdx6, VVdz, 1, Mdz6, MPI_COMM_WORLD)
-    DO ix=1,nxB
-      CALL FFT(VVdz(1:6,1:nzd,ix)); 
-    END DO
-    VV(i,0:nz,nx0:nxN)%uu=VVdz(1,1:nz+1,1:nxB); VV(i,-nz:-1,nx0:nxN)%uu=VVdz(1,nzd+1-nz:nzd,1:nxB)
-    VV(i,0:nz,nx0:nxN)%vv=VVdz(2,1:nz+1,1:nxB); VV(i,-nz:-1,nx0:nxN)%vv=VVdz(2,nzd+1-nz:nzd,1:nxB)
-    VV(i,0:nz,nx0:nxN)%ww=VVdz(3,1:nz+1,1:nxB); VV(i,-nz:-1,nx0:nxN)%ww=VVdz(3,nzd+1-nz:nzd,1:nxB)
-    VV(i,0:nz,nx0:nxN)%uv=VVdz(4,1:nz+1,1:nxB); VV(i,-nz:-1,nx0:nxN)%uv=VVdz(4,nzd+1-nz:nzd,1:nxB)
-    VV(i,0:nz,nx0:nxN)%vw=VVdz(5,1:nz+1,1:nxB); VV(i,-nz:-1,nx0:nxN)%vw=VVdz(5,nzd+1-nz:nzd,1:nxB)
-    VV(i,0:nz,nx0:nxN)%uw=VVdz(6,1:nz+1,1:nxB); VV(i,-nz:-1,nx0:nxN)%uw=VVdz(6,nzd+1-nz:nzd,1:nxB)
-  END SUBROUTINE convolutions
-
-
-  !--------------------------------------------------------------!
-  !-------------------------- buildRHS --------------------------! 
-  SUBROUTINE buildrhs(timescheme,compute_cfl)
-    logical, intent(IN) :: compute_cfl
-    integer(C_INT) :: iy,ix,iz,i
-    complex(C_DOUBLE_COMPLEX) :: ialfa,ibeta,rhsu,rhsv,rhsw
-    TYPE(rhstype) :: temp(-nz:nz,nx0:nxN)
-    real(C_DOUBLE) :: k2
-    DO iy=-1,2
-      CALL convolutions(iy,iy,.FALSE.)
-    END DO
-    DO iy=1,ny-1
-      DO i=-2,1
-        VV(i,:,:)=VV(i+1,:,:)
-      END DO
-      CALL convolutions(iy+2,2,compute_cfl)
-      DO ix=nx0,nxN
-        ialfa=dcmplx(0.0d0,alfa0*ix)
-        DO iz=-nz,nz
-          ibeta=dcmplx(0.0d0,beta0*iz)
-          k2=(alfa0*ix)**2.0d0 + (beta0*iz)**2.0d0
-          rhsu=-ialfa*iD0(uu)-iD1(uv)-ibeta*iD0(uw)
-          rhsv=-ialfa*iD0(uv)-iD1(vv)-ibeta*iD0(vw)
-          rhsw=-ialfa*iD0(uw)-iD1(vw)-ibeta*iD0(ww)
-          CALL timescheme(newrhs(0,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,v)-k2*D0(V,v),&
-                          sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix)%v),&
-                          ialfa*(ialfa*iD1(uu)+iD2(uv)+ibeta*iD1(uw))+&
-                          ibeta*(ialfa*iD1(uw)+iD2(vw)+ibeta*iD1(ww))-k2*rhsv)   !D2v
-          IF (ix==0 .AND. iz==0) THEN
-            CALL timescheme(newrhs(0,0,0)%eta,oldrhs(iy,0,0)%eta,rD0(V,u,w),&
-                            ni*rD2(V,u,w),&
-                            dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz))       !(Ubar, Wbar)
-          ELSE
-            CALL timescheme(newrhs(0,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta*D0(V,u)-ialfa*D0(V,w),&
-                            sum(SQ(iy,-2:2)*[ibeta*V(iy-2:iy+2,iz,ix)%u-ialfa*V(iy-2:iy+2,iz,ix)%w]),&    
-                            ibeta*rhsu-ialfa*rhsw)                               !eta
-          END IF
-          V(iy-2,iz,ix)%u=newrhs(-2,iz,ix)%eta; V(iy-2,iz,ix)%v=newrhs(-2,iz,ix)%D2v
+    real(C_DOUBLE), intent(in) :: ODE(1:3)
+    integer(C_INT) :: iy,iz,ix,im2,im1,i0,i1,i2
+    complex(C_DOUBLE_COMPLEX) :: rhsu,rhsv,rhsw,DD0_6,DD1_6,expl
+    DO iy=-3,ny+1
+      IF (iy<=ny-1) THEN
+      CALL convolutions(iy+2,imod(iy+2)+1,compute_cfl)
+      IF (iy>=1) THEN
+        im2=imod(iy-2)+1; im1=imod(iy-1)+1; i0=imod(iy)+1; i1=imod(iy+1)+1; i2=imod(iy+2)+1;
+        DO iz=-nz,nz 
+        DO ix=nx0,nxN
+            DD0_6=DD(d0,6); DD1_6=DD(d1,6);
+            rhsu=-ialfa(ix)*DD(d0,1)-DD(d1,4)-ibeta(iz)*DD0_6
+            rhsv=-ialfa(ix)*DD(d0,4)-DD(d1,2)-ibeta(iz)*DD(d0,5)
+            rhsw=-ialfa(ix)*DD0_6-DD(d1,5)-ibeta(iz)*DD(d0,3)
+            expl=(ialfa(ix)*(ialfa(ix)*DD(d1,1)+DD(d2,4)+ibeta(iz)*DD1_6)+&
+                  ibeta(iz)*(ialfa(ix)*DD1_6+DD(d2,5)+ibeta(iz)*DD(d1,3))-k2(iz,ix)*rhsv &
+                 )
+            timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),
+                       sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
+            IF (ix==0 .AND. iz==0) THEN
+              expl=(dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz) &
+                   )
+              timescheme(newrhs(iy,0,0)%eta,oldrhs(iy,0,0)%eta,rD0(V,1,3),ni*rD2(V,1,3),expl) !(Ubar, Wbar)
+            ELSE
+              expl=(ibeta(iz)*rhsu-ialfa(ix)*rhsw &
+                   )
+              timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),
+                              sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
+            END IF
         END DO
-      END DO
-      temp=newrhs(-2,:,:); newrhs(-2,:,:)=newrhs(-1,:,:); newrhs(-1,:,:)=newrhs(0,:,:); newrhs(0,:,:)=temp
+        END DO
+      END IF
+      END IF
+      IF (iy-2>=1) THEN
+        DO CONCURRENT (ix=nx0:nxN, iz=-nz:nz) 
+          V(iy-2,iz,ix,1) = newrhs(iy-2,iz,ix)%eta; V(iy-2,iz,ix,2) = newrhs(iy-2,iz,ix)%d2v; 
+        END DO
+      END IF      
     END DO
-    V(ny-2:ny-1,:,:)%u=newrhs(-2:-1,:,:)%eta; V(ny-2:ny-1,:,:)%v=newrhs(-2:-1,:,:)%D2v
   END SUBROUTINE buildrhs
-
-
-  !--------------------------------------------------------------!
-  !--------------------- ODE schemes library --------------------!
-  SUBROUTINE CN_AB(rhs,old,unkn,impl,expl)
-    complex(C_DOUBLE_COMPLEX), intent(out)   :: rhs
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: old
-    complex(C_DOUBLE_COMPLEX), intent(in) :: unkn,impl,expl
-    rhs=2.0d0/deltat*unkn+impl+3.0d0*expl-old
-    old=expl
-  END SUBROUTINE CN_AB
-
-  SUBROUTINE RK1_rai(rhs,old,unkn,impl,expl)
-    complex(C_DOUBLE_COMPLEX), intent(out)   :: rhs
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: old
-    complex(C_DOUBLE_COMPLEX), intent(in) :: unkn,impl,expl
-    rhs=120.0d0/32.0d0/deltat*unkn+impl+2.0d0*expl
-    old=expl
-  END SUBROUTINE RK1_rai
-
-  SUBROUTINE RK2_rai(rhs,old,unkn,impl,expl)
-    complex(C_DOUBLE_COMPLEX), intent(out)   :: rhs
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: old
-    complex(C_DOUBLE_COMPLEX), intent(in) :: unkn,impl,expl
-    rhs=120.0d0/(8.0d0*deltat)*unkn+impl+50.0d0/8.0d0*expl-34.0d0/8.0d0*old
-    old=expl
-  END SUBROUTINE RK2_rai
-
-  SUBROUTINE RK3_rai(rhs,old,unkn,impl,expl)
-    complex(C_DOUBLE_COMPLEX), intent(out)   :: rhs
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: old
-    complex(C_DOUBLE_COMPLEX), intent(in) :: unkn,impl,expl
-    rhs=120.0d0/(20.0d0*deltat)*unkn+impl+90.0d0/20.0d0*expl-50.0d0/20.0d0*old
-  END SUBROUTINE RK3_rai
 
   !--------------------------------------------------------------!
   !-------------------- read_restart_file -----------------------! 
-  SUBROUTINE read_restart_file(V)
-    TYPE(VELOCITY), intent(out) :: V(-1:ny+1,-nz:nz,nx0:nxN)
-    integer(kind=MPI_OFFSET_KIND) :: disp, offset 
-    TYPE(MPI_FILE) :: fh
-    TYPE(MPI_STATUS) :: stat
-    integer(C_INT) :: length
-    disp=((2*8)*3*(ny+3)*(2*nz+1)*nxB)*iproc; offset=0; length=2*3*(ny+3)*(2*nz+1)*nxB
-    CALL MPI_FILE_OPEN(MPI_COMM_WORLD,'Dati.cart.out',MPI_MODE_RDONLY,MPI_INFO_NULL,fh)
-    CALL MPI_FILE_SET_VIEW(fh,disp,MPI_DOUBLE_PRECISION,MPI_DOUBLE_PRECISION,'native', MPI_INFO_NULL)
-    CALL MPI_File_read_all(fh,V,length,MPI_DOUBLE_PRECISION,stat)
-    CALL MPI_FILE_CLOSE(fh)
+  SUBROUTINE read_restart_file()
+    integer(C_INT) :: i,iV,ix,iy,iz,io
+    integer(C_SIZE_T) :: pos
+    OPEN(UNIT=100,FILE="Dati.cart.out",access="stream",status="old",action="read",iostat=io)
+    IF (io==0) THEN 
+      IF (has_terminal) WRITE(*,*) "Reading restart file..."
+      DO iV=1,3
+        pos=(2*8)*(ny+3)*(2*nz+1)*nxB*iproc+(iV-1)*((2*8)*(ny+3)*(2*nz+1)*(nx+1))+1
+        READ(100,POS=pos) V(:,:,:,iV)
+      END DO
+      CLOSE(100)
+    ELSE    
+      V=0
+      IF (has_terminal) WRITE(*,*) "Generating initial field..."
+      IF (has_terminal) V(iy,0,0,1)=y(iy)*(2-y(iy))*3.d0/2.d0 + 0.05*SIN(y(iy)*2*PI)
+      DO ix=nx0,nxN; DO iz=-nz,nz 
+          V(iy,iz,ix,1) = 0.00001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,2) = 0.00001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,3) = 0.00001*EXP(dcmplx(0,RAND()-0.5)); 
+      END DO;        END DO
+    END IF
   END SUBROUTINE read_restart_file
 
   !--------------------------------------------------------------!
   !-------------------- save_restart_file -----------------------! 
-  SUBROUTINE save_restart_file(V)
-    TYPE(VELOCITY), intent(in) :: V(-1:ny+1,-nz:nz,nx0:nxN)
-    integer(kind=MPI_OFFSET_KIND) :: disp, offset 
-    TYPE(MPI_FILE) :: fh
-    TYPE(MPI_STATUS) :: stat
-    integer(C_INT) :: length
-    disp=((2*8)*3*(ny+3)*(2*nz+1)*nxB)*iproc; offset=0; length=2*3*(ny+3)*(2*nz+1)*nxB
-    CALL MPI_FILE_OPEN(MPI_COMM_WORLD,'Dati.cart.out',MPI_MODE_WRONLY,MPI_INFO_NULL,fh)
-    CALL MPI_FILE_SET_VIEW(fh,disp,MPI_DOUBLE_PRECISION,MPI_DOUBLE_PRECISION,'native', MPI_INFO_NULL)
-    CALL MPI_File_write_all(fh,V,length,MPI_DOUBLE_PRECISION,stat)
-    CALL MPI_FILE_CLOSE(fh)
+  SUBROUTINE save_restart_file()
+    integer(C_INT) :: i,iV
+    integer(C_SIZE_T) :: pos
+    DO i=0,nproc-1
+      IF (i==iproc) THEN
+        OPEN(UNIT=100,FILE="Dati.cart.out",access="stream",action="write")
+        DO iV=1,3
+          pos=(2*8)*(ny+3)*(2*nz+1)*nxB*iproc+(iV-1)*((2*8)*(ny+3)*(2*nz+1)*(nx+1))+1
+          WRITE(100,POS=pos) V(:,:,:,iV)
+        END DO
+        CLOSE(100)
+      END IF
+      CALL MPI_Barrier(MPI_COMM_WORLD)
+    END DO
   END SUBROUTINE save_restart_file
+
 
   !--------------------------------------------------------------!
   !------------------------- outstats ---------------------------! 
   SUBROUTINE outstats()
    real(C_DOUBLE) :: runtime_global   !cfl, energy, diss
    CALL MPI_Allreduce(cfl,runtime_global,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD); cfl=0
-   IF (has_terminal) WRITE(*,*) time,sum(d140(-2:2)*dreal(V(-1:3,0,0)%u)),-sum(d14n(-2:2)*dreal(V(ny-3:ny+1,0,0)%u)),runtime_global*deltat
-   IF (cflmax>0)  deltat=cflmax/runtime_global
+   IF (cflmax>0)  deltat=cflmax/runtime_global; 
+   IF (has_terminal) WRITE(*,"(F6.4,3X,4(F11.8,3X),4(F9.6,3X),2(F5.3,3X))") &
+                              time,sum(d140(-2:2)*dreal(V(-1:3,0,0,1))),-sum(d14n(-2:2)*dreal(V(ny-3:ny+1,0,0,1))),&
+                                   sum(d140(-2:2)*dreal(V(-1:3,0,0,3))),-sum(d14n(-2:2)*dreal(V(ny-3:ny+1,0,0,3))),&
+                                   yintegr(dreal(V(:,0,0,1))),meanpx+corrpx,yintegr(dreal(V(:,0,0,3))),meanpz +corrpz,&
+                                   runtime_global*deltat,deltat
+   runtime_global=0
    !Save Dati.cart.out
    IF ( (FLOOR((time+0.5*deltat)/dt_save) > FLOOR((time-0.5*deltat)/dt_save)) .AND. (time>0) ) THEN
      IF (has_terminal) WRITE(*,*) "Writing Dati.cart.out at time ", time
-     CALL save_restart_file(V)
+     CALL save_restart_file()
    END IF
   END SUBROUTINE outstats
-
 
 END MODULE dnsdata
