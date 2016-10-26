@@ -13,7 +13,7 @@
 ! 
 
 ! Measure per timestep execution time
-#define chron
+!#define chron
 
 
 PROGRAM channel
@@ -54,7 +54,8 @@ END IF
 
   ! Compute CFL
   DO iy=1,ny-1
-    CALL convolutions(iy,1,.TRUE.)
+   CALL convStep1(iy,1);        CALL waitStep1(); 
+   CALL convStep2(iy,1,.TRUE.); CALL waitStep2(); CALL convStep3(iy,1);
   END DO
   ! Time loop
   CALL outstats()

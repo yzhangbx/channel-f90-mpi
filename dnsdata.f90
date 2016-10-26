@@ -57,6 +57,7 @@ MODULE dnsdata
   !Outstats
   real(C_DOUBLE) :: cfl=0.0d0
   !Non-blocking communication
+  TYPE(MPI_Request) :: rStep1(1:6),rStep2(1:6)
 
   CONTAINS
 
@@ -85,7 +86,7 @@ MODULE dnsdata
     ALLOCATE(V(-1:ny+1,-nz:nz,nx0:nxN,1:3))
     ALLOCATE(memrhs(0:2,-nz:nz,nx0:nxN),oldrhs(1:ny-1,-nz:nz,nx0:nxN),bc0(-nz:nz,nx0:nxN),bcn(-nz:nz,nx0:nxN))
 #define newrhs(iy,iz,ix) memrhs(MOD(iy+1000,3),iz,ix)
-#define imod(iy) MOD(iy+1000,5)
+#define imod(iy) MOD(iy+1000,6)
     ALLOCATE(der(1:ny-1),d0mat(1:ny-1,-2:2),etamat(1:ny-1,-2:2),D2vmat(1:ny-1,-2:2),y(-1:ny+1),dy(1:ny-1))
     ALLOCATE(izd(-nz:nz),ialfa(nx0:nxN),ibeta(-nz:nz),k2(-nz:nz,nx0:nxN))
     y=(/(ymin+0.5d0*(ymax-ymin)*(tanh(a*(2.0d0*real(iy)/real(ny)-1))/tanh(a)+0.5d0*(ymax-ymin)), iy=-1, ny+1)/)
@@ -283,18 +284,37 @@ MODULE dnsdata
   END SUBROUTINE linsolve
 
    !--------------------------------------------------------------!
-   !------------------------ convolutions ------------------------!
-  SUBROUTINE convolutions(iy,i,compute_cfl)
+   !-------------------------- convStep1 -------------------------!
+  SUBROUTINE convStep1(iy,i)
      integer(C_INT), intent(in) :: iy,i
-     logical, intent(in) :: compute_cfl
-     integer(C_INT) :: ix,iz,iV
+     integer(C_INT) :: iV
      VVdz(1:nz+1,1:nxB,1:3,i)=V(iy,0:nz,nx0:nxN,1:3);         VVdz(nz+2:nzd-nz,1:nxB,1:3,i)=0;
      VVdz(nzd+1-nz:nzd,1:nxB,1:3,i)=V(iy,-nz:-1,nx0:nxN,1:3); 
      DO iV=1,3
-       CALL IFT(VVdz(1:nzd,1:nxB,iV,i)); CALL MPI_Alltoall(VVdz(:,:,iV,i), 1, Mdz, VVdx(:,:,iV,i), 1, Mdx, MPI_COMM_WORLD)
+       CALL IFT(VVdz(1:nzd,1:nxB,iV,i));
+       CALL MPI_IAlltoall(VVdz(:,:,iV,i), 1, Mdz, VVdx(:,:,iV,i), 1, Mdx, MPI_COMM_WORLD, rStep1(iV))
+     END DO
+   END SUBROUTINE convStep1
+
+   !--------------------------------------------------------------!
+   !-------------------------- waitStep1 -------------------------!
+  SUBROUTINE waitStep1()
+     integer(C_INT) :: iV
+     DO iV=1,3
+       CALL MPI_Wait(rStep1(iV),MPI_STATUS_IGNORE) 
+     END DO
+   END SUBROUTINE waitStep1
+
+
+   !--------------------------------------------------------------!
+   !-------------------------- convStep2 -------------------------!
+  SUBROUTINE convStep2(iy,i,compute_cfl)
+     integer(C_INT), intent(in) :: iy,i
+     logical, intent(in) :: compute_cfl
+     integer(C_INT) :: ix,iz,iV
+     DO iV=1,3
        VVdx(nx+2:nxd+1,1:nzB,iV,i)=0;    CALL RFT(VVdx(1:nxd+1,1:nzB,iV,i),rVVdx(1:2*nxd+2,1:nzB,iV,i));
      END DO
-     VVdx(nx+2:nxd+1,1:nzB,4:6,i)=0;
      IF (compute_cfl .and. iy>=1 .and. iy<=ny-1) THEN
            cfl=max(cfl,(maxval(abs(rVVdx(1:2*nxd,1:nzB,1,i))/dx     + &
                                abs(rVVdx(1:2*nxd,1:nzB,2,i))/dy(iy) + &
@@ -306,10 +326,28 @@ MODULE dnsdata
      rVVdx(1:2*nxd,1:nzB,1:3,i)= rVVdx(1:2*nxd,1:nzB,1:3,i)* rVVdx(1:2*nxd,1:nzB,1:3,i)*factor
      DO iV=1,6
        CALL HFT(rVVdx(1:2*nxd+2,1:nzB,iV,i),VVdx(1:nxd+1,1:nzB,iV,i)); 
-       CALL MPI_Alltoall(VVdx(:,:,iV,i), 1, Mdx, VVdz(:,:,iV,i), 1, Mdz, MPI_COMM_WORLD)
+       CALL MPI_IAlltoall(VVdx(:,:,iV,i), 1, Mdx, VVdz(:,:,iV,i), 1, Mdz, MPI_COMM_WORLD, rStep2(iV))
+     END DO
+   END SUBROUTINE convStep2
+
+   !--------------------------------------------------------------!
+   !-------------------------- waitStep2 -------------------------!
+  SUBROUTINE waitStep2()
+     integer(C_INT) :: iV
+     DO iV=1,6
+       CALL MPI_Wait(rStep2(iV),MPI_STATUS_IGNORE) 
+     END DO
+   END SUBROUTINE waitStep2
+
+   !--------------------------------------------------------------!
+   !-------------------------- convStep3 -------------------------!
+  SUBROUTINE convStep3(iy,i)
+     integer(C_INT), intent(in) :: iy,i
+     integer(C_INT) :: iV
+     DO iV=1,6
        CALL FFT(VVdz(1:nzd,1:nxB,iV,i));
      END DO
-   END SUBROUTINE convolutions
+   END SUBROUTINE convStep3
 
 
   !--------------------------------------------------------------!
@@ -324,35 +362,59 @@ MODULE dnsdata
     real(C_DOUBLE), intent(in) :: ODE(1:3)
     integer(C_INT) :: iy,iz,ix,im2,im1,i0,i1,i2
     complex(C_DOUBLE_COMPLEX) :: rhsu,rhsv,rhsw,DD0_6,DD1_6,expl
-    DO iy=-3,ny+1
+    DO iy=-1,2
+      CALL convStep1(iy,imod(iy)+1);             CALL waitStep1(); 
+      CALL convStep2(iy,imod(iy)+1,compute_cfl); CALL waitStep2(); CALL convStep3(iy,imod(iy)+1);
+    END DO
+    CALL convStep1(3,imod(3)+1); CALL waitStep1();  CALL convStep2(3,imod(3)+1,compute_cfl); 
+
+    DO iy=1,ny+1
       IF (iy<=ny-1) THEN
-      CALL convolutions(iy+2,imod(iy+2)+1,compute_cfl)
-      IF (iy>=1) THEN
+        !CALL convolutions(iy+2,imod(iy+2)+1,compute_cfl)
+        IF (iy<=ny-2) CALL convStep1(iy+3,imod(iy+3)+1); 
+        CALL waitStep2(); CALL convStep3(iy+2,imod(iy+2)+1)
         im2=imod(iy-2)+1; im1=imod(iy-1)+1; i0=imod(iy)+1; i1=imod(iy+1)+1; i2=imod(iy+2)+1;
-        DO iz=-nz,nz 
-        DO ix=nx0,nxN
-            DD0_6=DD(d0,6); DD1_6=DD(d1,6);
-            rhsu=-ialfa(ix)*DD(d0,1)-DD(d1,4)-ibeta(iz)*DD0_6
-            rhsv=-ialfa(ix)*DD(d0,4)-DD(d1,2)-ibeta(iz)*DD(d0,5)
-            rhsw=-ialfa(ix)*DD0_6-DD(d1,5)-ibeta(iz)*DD(d0,3)
-            expl=(ialfa(ix)*(ialfa(ix)*DD(d1,1)+DD(d2,4)+ibeta(iz)*DD1_6)+&
-                  ibeta(iz)*(ialfa(ix)*DD1_6+DD(d2,5)+ibeta(iz)*DD(d1,3))-k2(iz,ix)*rhsv &
-                 )
-            timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),
-                       sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
-            IF (ix==0 .AND. iz==0) THEN
-              expl=(dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz) &
-                   )
-              timescheme(newrhs(iy,0,0)%eta,oldrhs(iy,0,0)%eta,rD0(V,1,3),ni*rD2(V,1,3),expl) !(Ubar, Wbar)
-            ELSE
-              expl=(ibeta(iz)*rhsu-ialfa(ix)*rhsw &
-                   )
-              timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),
-                              sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
-            END IF
+        DO iz=-nz,-1 
+          DO ix=nx0,nxN
+              DD0_6=DD(d0,6); DD1_6=DD(d1,6);
+              rhsu=-ialfa(ix)*DD(d0,1)-DD(d1,4)-ibeta(iz)*DD0_6
+              rhsv=-ialfa(ix)*DD(d0,4)-DD(d1,2)-ibeta(iz)*DD(d0,5)
+              rhsw=-ialfa(ix)*DD0_6-DD(d1,5)-ibeta(iz)*DD(d0,3)
+              expl=(ialfa(ix)*(ialfa(ix)*DD(d1,1)+DD(d2,4)+ibeta(iz)*DD1_6)+&
+                    ibeta(iz)*(ialfa(ix)*DD1_6+DD(d2,5)+ibeta(iz)*DD(d1,3))-k2(iz,ix)*rhsv)
+              timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),
+                         sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
+              IF (ix==0 .AND. iz==0) THEN
+                expl=(dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz))
+                timescheme(newrhs(iy,0,0)%eta,oldrhs(iy,0,0)%eta,rD0(V,1,3),ni*rD2(V,1,3),expl) !(Ubar, Wbar)
+              ELSE
+                expl=(ibeta(iz)*rhsu-ialfa(ix)*rhsw)
+                timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),
+                                sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
+              END IF
+          END DO
         END DO
+        IF (iy<=ny-2) CALL waitStep1(); CALL convStep2(iy+3,imod(iy+3)+1,compute_cfl); 
+        DO iz=0,nz
+          DO ix=nx0,nxN
+              DD0_6=DD(d0,6); DD1_6=DD(d1,6);
+              rhsu=-ialfa(ix)*DD(d0,1)-DD(d1,4)-ibeta(iz)*DD0_6
+              rhsv=-ialfa(ix)*DD(d0,4)-DD(d1,2)-ibeta(iz)*DD(d0,5)
+              rhsw=-ialfa(ix)*DD0_6-DD(d1,5)-ibeta(iz)*DD(d0,3)
+              expl=(ialfa(ix)*(ialfa(ix)*DD(d1,1)+DD(d2,4)+ibeta(iz)*DD1_6)+&
+                    ibeta(iz)*(ialfa(ix)*DD1_6+DD(d2,5)+ibeta(iz)*DD(d1,3))-k2(iz,ix)*rhsv)
+              timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),
+                         sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
+              IF (ix==0 .AND. iz==0) THEN
+                expl=(dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz))
+                timescheme(newrhs(iy,0,0)%eta,oldrhs(iy,0,0)%eta,rD0(V,1,3),ni*rD2(V,1,3),expl) !(Ubar, Wbar)
+              ELSE
+                expl=(ibeta(iz)*rhsu-ialfa(ix)*rhsw)
+                timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),
+                                sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
+              END IF
+          END DO
         END DO
-      END IF
       END IF
       IF (iy-2>=1) THEN
         DO CONCURRENT (ix=nx0:nxN, iz=-nz:nz) 
@@ -378,10 +440,14 @@ MODULE dnsdata
     ELSE    
       V=0
       IF (has_terminal) WRITE(*,*) "Generating initial field..."
-      IF (has_terminal) V(iy,0,0,1)=y(iy)*(2-y(iy))*3.d0/2.d0 + 0.05*SIN(y(iy)*2*PI)
-      DO ix=nx0,nxN; DO iz=-nz,nz 
-          V(iy,iz,ix,1) = 0.00001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,2) = 0.00001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,3) = 0.00001*EXP(dcmplx(0,RAND()-0.5)); 
-      END DO;        END DO
+      DO iy=-1,ny+1; DO ix=nx0,nxN; DO iz=-nz,nz 
+          V(iy,iz,ix,1) = 0.001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,2) = 0.001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,3) = 0.001*EXP(dcmplx(0,RAND()-0.5)); 
+      END DO;        END DO;        END DO
+      IF (has_terminal) THEN
+        DO CONCURRENT (iy=-1:ny+1) 
+          V(iy,0,0,1)=y(iy)*(2-y(iy))*3.d0/2.d0 + 0.1*SIN(8*y(iy)*2*PI); 
+        END DO
+      END IF
     END IF
   END SUBROUTINE read_restart_file
 
