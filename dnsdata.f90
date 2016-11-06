@@ -6,10 +6,10 @@
 !        of a turbulent channel flow         !
 !                                            !
 !============================================!
-! 
+!
 ! Author: Dr.-Ing. Davide Gatti
 ! Date  : 28/Jul/2015
-! 
+!
 
 ! Force (nxd,nzd) to be at most the product of a
 ! power of 2 and a single factor 3.
@@ -92,14 +92,16 @@ MODULE dnsdata
     y=(/(ymin+0.5d0*(ymax-ymin)*(tanh(a*(2.0d0*real(iy)/real(ny)-1))/tanh(a)+0.5d0*(ymax-ymin)), iy=-1, ny+1)/)
     dy=(/( 0.5d0*(y(iy+1)-y(iy-1)) , iy=1, ny-1)/)
     izd=(/(merge(iz,nzd+iz,iz>=0),iz=-nz,nz)/);     ialfa=(/(dcmplx(0.0d0,ix*alfa0),ix=nx0,nxN)/);
-    ibeta=(/(dcmplx(0.0d0,iz*beta0),iz=-nz,nz)/); 
+    ibeta=(/(dcmplx(0.0d0,iz*beta0),iz=-nz,nz)/);
     FORALL  (iz=-nz:nz,ix=nx0:nxN) k2(iz,ix)=(alfa0*ix)**2.0d0+(beta0*iz)**2.0d0
+    IF (has_terminal) OPEN(UNIT=101,FILE='Runtimedata',ACTION='write')
   END SUBROUTINE init_memory
 
   !--------------------------------------------------------------!
   !--------------- Deallocate memory for solution ---------------!
   SUBROUTINE free_memory()
     DEALLOCATE(V,memrhs,oldrhs,der,bc0,bcn,d0mat,etamat,D2vmat,y,dy)
+    IF (has_terminal) CLOSE(UNIT=101)
   END SUBROUTINE free_memory
 
   !--------------------------------------------------------------!
@@ -236,7 +238,7 @@ MODULE dnsdata
         CALL applybc_0(D2vmat,v0bc,v0m1bc)
         CALL applybc_n(D2vmat,vnbc,vnp1bc)
         V(1,iz,ix,2)=V(1,iz,ix,2)-D2vmat(1,-2)*bc0(iz,ix)%vy/v0m1bc(-2)-D2vmat(1,-1)*bc0(iz,ix)%v/v0bc(-1)
-        V(2,iz,ix,2)=V(2,iz,ix,2)-D2vmat(2,-2)*bc0(iz,ix)%v/v0bc(-1)       
+        V(2,iz,ix,2)=V(2,iz,ix,2)-D2vmat(2,-2)*bc0(iz,ix)%v/v0bc(-1)
         V(ny-1,iz,ix,2)=V(ny-1,iz,ix,2)-D2vmat(ny-1,2)*bcn(iz,ix)%vy/vnp1bc(2)-D2vmat(ny-1,1)*bcn(iz,ix)%v/vnbc(1)
         V(ny-2,iz,ix,2)=V(ny-2,iz,ix,2)-D2vmat(ny-2,2)*bcn(iz,ix)%v/vnbc(1)
         CALL applybc_0(etamat,eta0bc,eta0m1bc)
@@ -257,14 +259,14 @@ MODULE dnsdata
         V(ny,iz,ix,1)=(bcn(iz,ix)%eta-sum(V(ny-3:ny-1,iz,ix,1)*etanbc(-2:0)))/etanbc(1)
         V(ny+1,iz,ix,1)=-sum(V(ny-3:ny,iz,ix,1)*etanp1bc(-2:1))/etanp1bc(2)
         IF (ix==0 .AND. iz==0) THEN
-            V(:,0,0,3) = dcmplx(dimag(V(:,0,0,1)),0.d0); 
-            V(:,0,0,1) = dcmplx(dreal(V(:,0,0,1)),0.d0); 
+            V(:,0,0,3) = dcmplx(dimag(V(:,0,0,1)),0.d0);
+            V(:,0,0,1) = dcmplx(dreal(V(:,0,0,1)),0.d0);
             ucor(-1:0)=0; ucor(1:ny-1)=1; ucor(ny:ny+1)=0
             ucor(1:ny-1)=etamat.bsr.ucor(1:ny-1)
             ucor(0)=-sum(ucor(1:3)*eta0bc(0:2))/eta0bc(-1)
             ucor(-1)=-sum(ucor(0:3)*eta0m1bc(-1:2))/eta0m1bc(-2)
             ucor(ny)=-sum(ucor(ny-3:ny-1)*etanbc(-2:0))/etanbc(1)
-            ucor(ny+1)=-sum(ucor(ny-3:ny)*etanp1bc(-2:1))/etanp1bc(2)          
+            ucor(ny+1)=-sum(ucor(ny-3:ny)*etanp1bc(-2:1))/etanp1bc(2)
             IF (abs(meanflowx)>1.0d-7) THEN
               corrpx = (meanflowx-yintegr(dreal(V(:,0,0,1))))/yintegr(ucor)
               V(:,0,0,1)=dcmplx(dreal(V(:,0,0,1))+corrpx*ucor,dimag(V(:,0,0,1)))
@@ -289,29 +291,28 @@ MODULE dnsdata
      integer(C_INT), intent(in) :: iy,i
      integer(C_INT) :: iV
      VVdz(1:nz+1,1:nxB,1:3,i)=V(iy,0:nz,nx0:nxN,1:3);         VVdz(nz+2:nzd-nz,1:nxB,1:3,i)=0;
-     VVdz(nzd+1-nz:nzd,1:nxB,1:3,i)=V(iy,-nz:-1,nx0:nxN,1:3); 
+     VVdz(nzd+1-nz:nzd,1:nxB,1:3,i)=V(iy,-nz:-1,nx0:nxN,1:3);
      DO iV=1,3
        CALL IFT(VVdz(1:nzd,1:nxB,iV,i));
        CALL MPI_IAlltoall(VVdz(:,:,iV,i), 1, Mdz, VVdx(:,:,iV,i), 1, Mdx, MPI_COMM_WORLD, rStep1(iV))
      END DO
-   END SUBROUTINE convStep1
+  END SUBROUTINE convStep1
 
    !--------------------------------------------------------------!
    !-------------------------- waitStep1 -------------------------!
   SUBROUTINE waitStep1()
      integer(C_INT) :: iV
      DO iV=1,3
-       CALL MPI_Wait(rStep1(iV),MPI_STATUS_IGNORE) 
+       CALL MPI_Wait(rStep1(iV),MPI_STATUS_IGNORE)
      END DO
-   END SUBROUTINE waitStep1
-
+  END SUBROUTINE waitStep1
 
    !--------------------------------------------------------------!
    !-------------------------- convStep2 -------------------------!
   SUBROUTINE convStep2(iy,i,compute_cfl)
      integer(C_INT), intent(in) :: iy,i
      logical, intent(in) :: compute_cfl
-     integer(C_INT) :: ix,iz,iV
+     integer(C_INT) :: iV
      DO iV=1,3
        VVdx(nx+2:nxd+1,1:nzB,iV,i)=0;    CALL RFT(VVdx(1:nxd+1,1:nzB,iV,i),rVVdx(1:2*nxd+2,1:nzB,iV,i));
      END DO
@@ -325,19 +326,19 @@ MODULE dnsdata
      rVVdx(1:2*nxd,1:nzB,6,i)  = rVVdx(1:2*nxd,1:nzB,1,i)  * rVVdx(1:2*nxd,1:nzB,3,i)*factor
      rVVdx(1:2*nxd,1:nzB,1:3,i)= rVVdx(1:2*nxd,1:nzB,1:3,i)* rVVdx(1:2*nxd,1:nzB,1:3,i)*factor
      DO iV=1,6
-       CALL HFT(rVVdx(1:2*nxd+2,1:nzB,iV,i),VVdx(1:nxd+1,1:nzB,iV,i)); 
+       CALL HFT(rVVdx(1:2*nxd+2,1:nzB,iV,i),VVdx(1:nxd+1,1:nzB,iV,i));
        CALL MPI_IAlltoall(VVdx(:,:,iV,i), 1, Mdx, VVdz(:,:,iV,i), 1, Mdz, MPI_COMM_WORLD, rStep2(iV))
      END DO
-   END SUBROUTINE convStep2
+  END SUBROUTINE convStep2
 
    !--------------------------------------------------------------!
    !-------------------------- waitStep2 -------------------------!
   SUBROUTINE waitStep2()
      integer(C_INT) :: iV
      DO iV=1,6
-       CALL MPI_Wait(rStep2(iV),MPI_STATUS_IGNORE) 
+       CALL MPI_Wait(rStep2(iV),MPI_STATUS_IGNORE)
      END DO
-   END SUBROUTINE waitStep2
+  END SUBROUTINE waitStep2
 
    !--------------------------------------------------------------!
    !-------------------------- convStep3 -------------------------!
@@ -347,8 +348,7 @@ MODULE dnsdata
      DO iV=1,6
        CALL FFT(VVdz(1:nzd,1:nxB,iV,i));
      END DO
-   END SUBROUTINE convStep3
-
+  END SUBROUTINE convStep3
 
   !--------------------------------------------------------------!
   !-------------------------- buildRHS --------------------------!
@@ -356,25 +356,25 @@ MODULE dnsdata
   ! (uu,vv,ww,uv,vw,uw) = (1,2,3,4,5,6)
 #define DD(f,k) ( der(iy)%f(-2)*VVdz(izd(iz)+1,ix+1-nx0,k,im2)+der(iy)%f(-1)*VVdz(izd(iz)+1,ix+1-nx0,k,im1)+der(iy)%f(0)*VVdz(izd(iz)+1,ix+1-nx0,k,i0)+ \
                   der(iy)%f(1 )*VVdz(izd(iz)+1,ix+1-nx0,k,i1 )+der(iy)%f(2 )*VVdz(izd(iz)+1,ix+1-nx0,k,i2 ) )
-#define timescheme(rhs,old,unkn,impl,expl) rhs=ODE(1)*(unkn)/deltat+(impl)+ODE(2)*(expl)-ODE(3)*(old); old=expl                   
+#define timescheme(rhs,old,unkn,impl,expl) rhs=ODE(1)*(unkn)/deltat+(impl)+ODE(2)*(expl)-ODE(3)*(old); old=expl
   SUBROUTINE buildrhs(ODE,compute_cfl)
     logical, intent(in) :: compute_cfl
     real(C_DOUBLE), intent(in) :: ODE(1:3)
     integer(C_INT) :: iy,iz,ix,im2,im1,i0,i1,i2
     complex(C_DOUBLE_COMPLEX) :: rhsu,rhsv,rhsw,DD0_6,DD1_6,expl
     DO iy=-1,2
-      CALL convStep1(iy,imod(iy)+1);             CALL waitStep1(); 
+      CALL convStep1(iy,imod(iy)+1);             CALL waitStep1();
       CALL convStep2(iy,imod(iy)+1,compute_cfl); CALL waitStep2(); CALL convStep3(iy,imod(iy)+1);
     END DO
-    CALL convStep1(3,imod(3)+1); CALL waitStep1();  CALL convStep2(3,imod(3)+1,compute_cfl); 
+    CALL convStep1(3,imod(3)+1); CALL waitStep1();  CALL convStep2(3,imod(3)+1,compute_cfl);
 
     DO iy=1,ny+1
       IF (iy<=ny-1) THEN
         !CALL convolutions(iy+2,imod(iy+2)+1,compute_cfl)
-        IF (iy<=ny-2) CALL convStep1(iy+3,imod(iy+3)+1); 
+        IF (iy<=ny-2) CALL convStep1(iy+3,imod(iy+3)+1);
         CALL waitStep2(); CALL convStep3(iy+2,imod(iy+2)+1)
         im2=imod(iy-2)+1; im1=imod(iy-1)+1; i0=imod(iy)+1; i1=imod(iy+1)+1; i2=imod(iy+2)+1;
-        DO iz=-nz,-1 
+        DO iz=-nz,-1
           DO ix=nx0,nxN
               DD0_6=DD(d0,6); DD1_6=DD(d1,6);
               rhsu=-ialfa(ix)*DD(d0,1)-DD(d1,4)-ibeta(iz)*DD0_6
@@ -382,19 +382,17 @@ MODULE dnsdata
               rhsw=-ialfa(ix)*DD0_6-DD(d1,5)-ibeta(iz)*DD(d0,3)
               expl=(ialfa(ix)*(ialfa(ix)*DD(d1,1)+DD(d2,4)+ibeta(iz)*DD1_6)+&
                     ibeta(iz)*(ialfa(ix)*DD1_6+DD(d2,5)+ibeta(iz)*DD(d1,3))-k2(iz,ix)*rhsv)
-              timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),
-                         sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
+              timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
               IF (ix==0 .AND. iz==0) THEN
                 expl=(dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz))
                 timescheme(newrhs(iy,0,0)%eta,oldrhs(iy,0,0)%eta,rD0(V,1,3),ni*rD2(V,1,3),expl) !(Ubar, Wbar)
               ELSE
                 expl=(ibeta(iz)*rhsu-ialfa(ix)*rhsw)
-                timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),
-                                sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
+                timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
               END IF
           END DO
         END DO
-        IF (iy<=ny-2) CALL waitStep1(); CALL convStep2(iy+3,imod(iy+3)+1,compute_cfl); 
+        IF (iy<=ny-2) CALL waitStep1(); CALL convStep2(iy+3,imod(iy+3)+1,compute_cfl);
         DO iz=0,nz
           DO ix=nx0,nxN
               DD0_6=DD(d0,6); DD1_6=DD(d1,6);
@@ -403,64 +401,68 @@ MODULE dnsdata
               rhsw=-ialfa(ix)*DD0_6-DD(d1,5)-ibeta(iz)*DD(d0,3)
               expl=(ialfa(ix)*(ialfa(ix)*DD(d1,1)+DD(d2,4)+ibeta(iz)*DD1_6)+&
                     ibeta(iz)*(ialfa(ix)*DD1_6+DD(d2,5)+ibeta(iz)*DD(d1,3))-k2(iz,ix)*rhsv)
-              timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),
-                         sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
+              timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
               IF (ix==0 .AND. iz==0) THEN
                 expl=(dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz))
                 timescheme(newrhs(iy,0,0)%eta,oldrhs(iy,0,0)%eta,rD0(V,1,3),ni*rD2(V,1,3),expl) !(Ubar, Wbar)
               ELSE
                 expl=(ibeta(iz)*rhsu-ialfa(ix)*rhsw)
-                timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),
-                                sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
+                timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
               END IF
           END DO
         END DO
       END IF
       IF (iy-2>=1) THEN
-        DO CONCURRENT (ix=nx0:nxN, iz=-nz:nz) 
-          V(iy-2,iz,ix,1) = newrhs(iy-2,iz,ix)%eta; V(iy-2,iz,ix,2) = newrhs(iy-2,iz,ix)%d2v; 
+        DO CONCURRENT (ix=nx0:nxN, iz=-nz:nz)
+          V(iy-2,iz,ix,1) = newrhs(iy-2,iz,ix)%eta; V(iy-2,iz,ix,2) = newrhs(iy-2,iz,ix)%d2v;
         END DO
-      END IF      
+      END IF
     END DO
   END SUBROUTINE buildrhs
 
   !--------------------------------------------------------------!
-  !-------------------- read_restart_file -----------------------! 
+  !-------------------- read_restart_file -----------------------!
   SUBROUTINE read_restart_file()
-    integer(C_INT) :: i,iV,ix,iy,iz,io
+    integer(C_SIZE_T) :: iV,ix,iy,iz,io,nxB_t,nx_t,nz_t,ny_t,iproc_t,br=8,bc=16,iV_t,b1=1,b7=7,b3=3
     integer(C_SIZE_T) :: pos
     OPEN(UNIT=100,FILE="Dati.cart.out",access="stream",status="old",action="read",iostat=io)
-    IF (io==0) THEN 
+    nx_t=nx+1; ny_t=ny+3; nz_t=2*nz+1; iproc_t=iproc; nxB_t=nxB
+    IF (io==0) THEN
       IF (has_terminal) WRITE(*,*) "Reading restart file..."
+      READ(100,POS=1) nx,ny,nz,alfa0,beta0,ni,a,ymin,ymax,time
       DO iV=1,3
-        pos=(2*8)*(ny+3)*(2*nz+1)*nxB*iproc+(iV-1)*((2*8)*(ny+3)*(2*nz+1)*(nx+1))+1
+        pos=bc*ny_t*nz_t*nxB_t*iproc_t+(iV-b1)*(bc*ny_t*nz_t*nx_t)+b1+(br*b7+b3*SIZEOF(nx))
+        WRITE(*,*) pos,iproc
         READ(100,POS=pos) V(:,:,:,iV)
       END DO
       CLOSE(100)
-    ELSE    
+    ELSE
       V=0
       IF (has_terminal) WRITE(*,*) "Generating initial field..."
-      DO iy=-1,ny+1; DO ix=nx0,nxN; DO iz=-nz,nz 
-          V(iy,iz,ix,1) = 0.001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,2) = 0.001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,3) = 0.001*EXP(dcmplx(0,RAND()-0.5)); 
+      DO iy=-1,ny+1; DO ix=nx0,nxN; DO iz=-nz,nz
+          V(iy,iz,ix,1) = 0.0001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,2) = 0.0001*EXP(dcmplx(0,RAND()-0.5));  V(iy,iz,ix,3) = 0.0001*EXP(dcmplx(0,RAND()-0.5));
       END DO;        END DO;        END DO
       IF (has_terminal) THEN
-        DO CONCURRENT (iy=-1:ny+1) 
-          V(iy,0,0,1)=y(iy)*(2-y(iy))*3.d0/2.d0 + 0.1*SIN(8*y(iy)*2*PI); 
+        DO CONCURRENT (iy=-1:ny+1)
+          V(iy,0,0,1)=y(iy)*(2-y(iy))*3.d0/2.d0 + 0.001*SIN(8*y(iy)*2*PI);
         END DO
       END IF
     END IF
   END SUBROUTINE read_restart_file
 
   !--------------------------------------------------------------!
-  !-------------------- save_restart_file -----------------------! 
-  SUBROUTINE save_restart_file()
-    integer(C_INT) :: i,iV
-    integer(C_SIZE_T) :: pos
+  !-------------------- save_restart_file -----------------------!
+  SUBROUTINE save_restart_file(filename)
+    integer(C_SIZE_T) :: iV,ix,iy,iz,io,nxB_t,nx_t,nz_t,ny_t,iproc_t,br=8,bc=16,iV_t,b1=1,b7=7,b3=3
+    integer(C_SIZE_T) :: pos,i
+    character(len=40) :: filename
     DO i=0,nproc-1
       IF (i==iproc) THEN
-        OPEN(UNIT=100,FILE="Dati.cart.out",access="stream",action="write")
+        OPEN(UNIT=100,FILE=TRIM(filename),access="stream",action="write")
+        nx_t=nx+1; ny_t=ny+3; nz_t=2*nz+1; iproc_t=iproc; nxB_t=nxB
+        IF (has_terminal) WRITE(UNIT=100,POS=1) nx,ny,nz,alfa0,beta0,ni,a,ymin,ymax,time
         DO iV=1,3
-          pos=(2*8)*(ny+3)*(2*nz+1)*nxB*iproc+(iV-1)*((2*8)*(ny+3)*(2*nz+1)*(nx+1))+1
+          pos=bc*ny_t*nz_t*nxB_t*iproc_t+(iV-b1)*(bc*ny_t*nz_t*nx_t)+b1+(br*b7+b3*SIZEOF(nx))
           WRITE(100,POS=pos) V(:,:,:,iV)
         END DO
         CLOSE(100)
@@ -471,21 +473,33 @@ MODULE dnsdata
 
 
   !--------------------------------------------------------------!
-  !------------------------- outstats ---------------------------! 
+  !------------------------- outstats ---------------------------!
   SUBROUTINE outstats()
-   real(C_DOUBLE) :: runtime_global   !cfl, energy, diss
+   real(C_DOUBLE) :: runtime_global   !cfl
+   character(len=40) :: istring, filename
    CALL MPI_Allreduce(cfl,runtime_global,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD); cfl=0
-   IF (cflmax>0)  deltat=cflmax/runtime_global; 
-   IF (has_terminal) WRITE(*,"(F6.4,3X,4(F11.8,3X),4(F9.6,3X),2(F5.3,3X))") &
-                              time,sum(d140(-2:2)*dreal(V(-1:3,0,0,1))),-sum(d14n(-2:2)*dreal(V(ny-3:ny+1,0,0,1))),&
-                                   sum(d140(-2:2)*dreal(V(-1:3,0,0,3))),-sum(d14n(-2:2)*dreal(V(ny-3:ny+1,0,0,3))),&
-                                   yintegr(dreal(V(:,0,0,1))),meanpx+corrpx,yintegr(dreal(V(:,0,0,3))),meanpz +corrpz,&
-                                   runtime_global*deltat,deltat
+   IF (cflmax>0)  deltat=cflmax/runtime_global;
+   IF (has_terminal) THEN
+     WRITE(*,"(F6.4,3X,4(F11.6,3X),4(F9.4,3X),2(F9.6,3X))") &
+           time,sum(d140(-2:2)*dreal(V(-1:3,0,0,1))),-sum(d14n(-2:2)*dreal(V(ny-3:ny+1,0,0,1))),&
+                sum(d140(-2:2)*dreal(V(-1:3,0,0,3))),-sum(d14n(-2:2)*dreal(V(ny-3:ny+1,0,0,3))),&
+                yintegr(dreal(V(:,0,0,1))),meanpx+corrpx,yintegr(dreal(V(:,0,0,3))),meanpz +corrpz,&
+                runtime_global*deltat,deltat
+     WRITE(101,*) time,sum(d140(-2:2)*dreal(V(-1:3,0,0,1))),-sum(d14n(-2:2)*dreal(V(ny-3:ny+1,0,0,1))),&
+                       sum(d140(-2:2)*dreal(V(-1:3,0,0,3))),-sum(d14n(-2:2)*dreal(V(ny-3:ny+1,0,0,3))),&
+                       yintegr(dreal(V(:,0,0,1))),meanpx+corrpx,yintegr(dreal(V(:,0,0,3))),meanpz +corrpz,&
+                       runtime_global*deltat,deltat
+   END IF
    runtime_global=0
    !Save Dati.cart.out
    IF ( (FLOOR((time+0.5*deltat)/dt_save) > FLOOR((time-0.5*deltat)/dt_save)) .AND. (time>0) ) THEN
      IF (has_terminal) WRITE(*,*) "Writing Dati.cart.out at time ", time
-     CALL save_restart_file()
+     filename="Dati.cart.out"; CALL save_restart_file(filename)
+   END IF
+   IF ( (FLOOR((time+0.5*deltat)/dt_field) > FLOOR((time-0.5*deltat)/dt_field)) .AND. (time>0) ) THEN
+     WRITE(istring,*) FLOOR(time/dt_save)
+     IF (has_terminal) WRITE(*,*) "Writing Dati.cart."//TRIM(ADJUSTL(istring))//".out at time ", time
+     filename="Dati.cart."//TRIM(ADJUSTL(istring))//".out"; CALL save_restart_file(filename)
    END IF
   END SUBROUTINE outstats
 

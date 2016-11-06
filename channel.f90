@@ -4,23 +4,22 @@
 !       of a turbulent channel flow          !
 !                                            !
 !============================================!
-! 
+!
 ! This program has been written following the
 ! KISS (Keep it Simple and Stupid) philosophy
-!           
+!
 ! Author: Dr.-Ing. Davide Gatti
 ! Date  : 28/Jul/2015
-! 
+!
 
 ! Measure per timestep execution time
 !#define chron
-
 
 PROGRAM channel
 
   USE dnsdata
 #ifdef crhon
-  REAL timei,timee 
+  REAL timei,timee
 #endif
 
   ! Init MPI
@@ -32,7 +31,7 @@ PROGRAM channel
   CALL init_memory()
 
   ! Init various subroutines
-  CALL init_fft(VVdz,VVdx,rVVdx,nxd,nx0,nxN,nxB,nzd,nz0,nzN,nzB)
+  CALL init_fft(VVdz,VVdx,rVVdx,nxd,nxB,nzd,nzB)
   CALL setup_derivatives()
   CALL setup_boundary_conditions()
   CALL read_restart_file()
@@ -54,12 +53,12 @@ END IF
 
   ! Compute CFL
   DO iy=1,ny-1
-   CALL convStep1(iy,1);        CALL waitStep1(); 
+   CALL convStep1(iy,1);        CALL waitStep1();
    CALL convStep2(iy,1,.TRUE.); CALL waitStep2(); CALL convStep3(iy,1);
   END DO
   ! Time loop
   CALL outstats()
-  timeloop: DO WHILE (time<t_max-deltat/2.0) 
+  timeloop: DO WHILE (time<t_max-deltat/2.0)
 #ifdef chron
     CALL CPU_TIME(timei)
 #endif
