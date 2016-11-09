@@ -2,9 +2,8 @@ F90 = mpifort
 INC = /user/hi221/local/fftw-3.3.4/include/
 LIB = /user/hi221/local/fftw-3.3.4/lib/
 
-OBJ = typedef.o rbmat.o ffts.o dnsdata.o
-#flags =  -ffree-line-length-none -I$(INC) -L$(LIB) -cpp  -g -check all -fpe3 -fpe-all=3 -debug all
-flags = -I$(INC) -cpp -L$(LIB)  -Ofast
+OBJ = typedef.o rbmat.o mpi_transpose.o ffts.o dnsdata.o
+flags = -I$(INC) -cpp -L$(LIB)  -Ofast -no-wrap-margin
 libs = -lfftw3
 
 channel: $(OBJ) channel.o
