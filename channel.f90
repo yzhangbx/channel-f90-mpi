@@ -71,9 +71,8 @@ IF (has_terminal) THEN
 END IF
 
   ! Compute CFL
-  DO iy=1,ny-1
-   CALL convStep1(iy,1);        CALL waitStep1();
-   CALL convStep2(iy,1,.TRUE.); CALL waitStep2(); CALL convStep3(iy,1);
+  DO iy=2,ny-1
+    CALL convolutions(iy,0,.TRUE.)
   END DO
   ! Time loop
   CALL outstats()
