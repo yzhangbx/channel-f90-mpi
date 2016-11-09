@@ -32,4 +32,8 @@ MODULE typedef
     complex(C_DOUBLE_COMPLEX) :: v,eta
   END TYPE VETA
 
+  TYPE :: STATSTYPE
+    real(C_DOUBLE) :: U,uu,vv,ww,uv
+  END TYPE STATSTYPE
+
 END MODULE typedef
