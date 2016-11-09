@@ -21,6 +21,11 @@ PROGRAM channel
 #ifdef crhon
   REAL timei,timee
 #endif
+  ! Stats
+  INTEGER(C_SIZE_T) :: istep, nstats=20, istats=0
+  LOGICAL :: io
+  REAL(C_DOUBLE), allocatable :: localstats(:,:), globalstats(:,:)
+  REAL(C_DOUBLE) :: c
 
   ! Init MPI
   CALL MPI_INIT(ierr)
@@ -35,6 +40,20 @@ PROGRAM channel
   CALL setup_derivatives()
   CALL setup_boundary_conditions()
   CALL read_restart_file()
+
+  ! Allocate memory for stats
+  ALLOCATE(localstats(-1:ny+1,1:5),globalstats(-1:ny+1,1:5))
+  IF (has_terminal) THEN 
+    INQUIRE(FILE="stats.dat",EXIST=io)
+    IF (io==0) THEN 
+      istats=0; globalstats=0
+      OPEN(UNIT=102,FILE='stats.dat',STATUS="new",ACCESS='stream',ACTION='readwrite')
+    ELSE
+      OPEN(UNIT=102,FILE='stats.dat',STATUS="old",ACCESS='stream',ACTION='readwrite')
+      READ(102,POS=1) istats, globalstats
+      globalstats=globalstats*istats
+    END IF
+  END IF
 
 IF (has_terminal) THEN
   ! Output DNS.in
@@ -73,8 +92,30 @@ END IF
     CALL CPU_TIME(timee)
     IF (has_terminal) WRITE(*,*) timee-timei
 #endif
+    ! Compute statistics
+    istep=istep+1
+    IF (MOD(istep,nstats)==0) THEN
+      localstats=0; istats=istats+1
+      IF (has_terminal) localstats(:,1)=localstats(:,1)+dreal(V(:,0,0,1))
+      DO ix=nx0,nxN
+        c = MERGE(1.0d0,2.0d0,ix==0) 
+        localstats(:,5) = localstats(:,5) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,2)),2)
+        localstats(:,2) = localstats(:,2) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,1)),2)
+        localstats(:,3) = localstats(:,3) +c*SUM(V(:,:,ix,2)*CONJG(V(:,:,ix,2)),2)
+        localstats(:,4) = localstats(:,4) +c*SUM(V(:,:,ix,3)*CONJG(V(:,:,ix,3)),2)
+      END DO
+      IF (has_terminal) THEN
+        CALL MPI_Reduce(MPI_IN_PLACE,localstats,(ny+3)*5,MPI_DOUBLE_PRECISION,MPI_SUM,0,MPI_COMM_WORLD)
+      ELSE 
+        CALL MPI_Reduce(localstats,localstats,(ny+3)*5,MPI_DOUBLE_PRECISION,MPI_SUM,0,MPI_COMM_WORLD)
+      END IF
+      IF (has_terminal) THEN
+        globalstats=globalstats+localstats; WRITE(102,POS=1) istats,globalstats/istats
+      END IF
+    END IF
   END DO timeloop
 
+  IF (has_terminal) CLOSE(102)
   ! Realease memory
    CALL free_fft()
    CALL free_memory()
