@@ -95,13 +95,13 @@ END IF
     istep=istep+1
     IF (MOD(istep,nstats)==0) THEN
       localstats=0; istats=istats+1
-      IF (has_terminal) localstats(:,1)=localstats(:,1)+dreal(V(:,0,0,1))
+      IF (has_terminal) localstats(:,1)=localstats(:,1)+dreal(V(:,0,0,1))  ! U
       DO ix=nx0,nxN
         c = MERGE(1.0d0,2.0d0,ix==0) 
-        localstats(:,5) = localstats(:,5) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,2)),2)
-        localstats(:,2) = localstats(:,2) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,1)),2)
-        localstats(:,3) = localstats(:,3) +c*SUM(V(:,:,ix,2)*CONJG(V(:,:,ix,2)),2)
-        localstats(:,4) = localstats(:,4) +c*SUM(V(:,:,ix,3)*CONJG(V(:,:,ix,3)),2)
+        localstats(:,5) = localstats(:,5) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,2)),2)  ! uv
+        localstats(:,2) = localstats(:,2) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,1)),2)  ! uu
+        localstats(:,3) = localstats(:,3) +c*SUM(V(:,:,ix,2)*CONJG(V(:,:,ix,2)),2)  ! vv
+        localstats(:,4) = localstats(:,4) +c*SUM(V(:,:,ix,3)*CONJG(V(:,:,ix,3)),2)  ! ww
       END DO
       IF (has_terminal) THEN
         CALL MPI_Reduce(MPI_IN_PLACE,localstats,(ny+3)*5,MPI_DOUBLE_PRECISION,MPI_SUM,0,MPI_COMM_WORLD)
