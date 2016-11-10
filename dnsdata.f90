@@ -340,8 +340,7 @@ MODULE dnsdata
             expl=(ialfa(ix)*(ialfa(ix)*DD(d1,1)+DD(d2,4)+ibeta(iz)*DD1_6)+&
                   ibeta(iz)*(ialfa(ix)*DD1_6+DD(d2,5)+ibeta(iz)*DD(d1,3))-k2(iz,ix)*rhsv &
                  )
-            timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),
-                       sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
+            timescheme(newrhs(iy,iz,ix)%D2v, oldrhs(iy,iz,ix)%D2v, D2(V,2)-k2(iz,ix)*D0(V,2),sum(OS(iy,-2:2)*V(iy-2:iy+2,iz,ix,2)),expl); !(D2v)
             IF (ix==0 .AND. iz==0) THEN
               expl=(dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz) &
                    )
@@ -349,8 +348,7 @@ MODULE dnsdata
             ELSE
               expl=(ibeta(iz)*rhsu-ialfa(ix)*rhsw &
                    )
-              timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),
-                              sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
+              timescheme(newrhs(iy,iz,ix)%eta, oldrhs(iy,iz,ix)%eta,ibeta(iz)*D0(V,1)-ialfa(ix)*D0(V,3),sum(SQ(iy,-2:2)*[ibeta(iz)*V(iy-2:iy+2,iz,ix,1)-ialfa(ix)*V(iy-2:iy+2,iz,ix,3)]),expl) !(eta)
             END IF
         END DO
         END DO
@@ -376,7 +374,6 @@ MODULE dnsdata
       READ(100,POS=1) nx,ny,nz,alfa0,beta0,ni,a,ymin,ymax,time
       DO iV=1,3
         pos=bc*ny_t*nz_t*nxB_t*iproc_t+(iV-b1)*(bc*ny_t*nz_t*nx_t)+b1+(br*b7+b3*SIZEOF(nx))
-        WRITE(*,*) pos,iproc
         READ(100,POS=pos) V(:,:,:,iV)
       END DO
       CLOSE(100)
