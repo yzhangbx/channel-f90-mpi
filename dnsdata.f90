@@ -31,6 +31,7 @@ MODULE dnsdata
   integer(C_INT), allocatable :: izd(:)
   complex(C_DOUBLE_COMPLEX), allocatable :: ialfa(:),ibeta(:)
   real(C_DOUBLE), allocatable :: k2(:,:)
+  logical :: time_from_restart
   !Grid
   integer(C_INT), private :: iy
   real(C_DOUBLE), allocatable :: y(:),dy(:)
@@ -56,7 +57,7 @@ MODULE dnsdata
                     RK3_rai(1:3)=(/ 120.0d0/20.0d0, 90.0d0/20.0d0, 50.0d0/20.0d0 /)
   !Outstats
   real(C_DOUBLE) :: cfl=0.0d0
-  !Non-blocking communication
+  integer(C_SIZE_T) :: istep,nstep
 
   CONTAINS
 
@@ -73,7 +74,8 @@ MODULE dnsdata
     READ(15, *) ni; READ(15, *) a, ymin, ymax; ni=1/ni
     READ(15, *) meanpx, meanpz; READ(15, *) meanflowx, meanflowz
     READ(15, *) deltat, cflmax, time
-    READ(15, *) dt_field, dt_save, t_max
+    READ(15, *) dt_field, dt_save, t_max, time_from_restart
+    READ(15, *) nstep
     CLOSE(15)
     dx=PI/(alfa0*nxd); dz=2.0d0*PI/(beta0*nzd);  factor=1.0d0/(2.0d0*nxd*nzd)
   END SUBROUTINE read_dnsin
@@ -374,6 +376,7 @@ MODULE dnsdata
       READ(100,POS=1) nx,ny,nz,alfa0,beta0,ni,a,ymin,ymax,time
       DO iV=1,3
         pos=bc*ny_t*nz_t*nxB_t*iproc_t+(iV-b1)*(bc*ny_t*nz_t*nx_t)+b1+(br*b7+b3*SIZEOF(nx))
+        WRITE(*,*) pos,iproc
         READ(100,POS=pos) V(:,:,:,iV)
       END DO
       CLOSE(100)
@@ -433,12 +436,12 @@ MODULE dnsdata
    END IF
    runtime_global=0
    !Save Dati.cart.out
-   IF ( (FLOOR((time+0.5*deltat)/dt_save) > FLOOR((time-0.5*deltat)/dt_save)) .AND. (time>0) ) THEN
+   IF ( ((FLOOR((time+0.5*deltat)/dt_save) > FLOOR((time-0.5*deltat)/dt_save)) .AND. (istep>1)) .OR. istep==nstep ) THEN
      IF (has_terminal) WRITE(*,*) "Writing Dati.cart.out at time ", time
      filename="Dati.cart.out"; CALL save_restart_file(filename)
    END IF
    IF ( (FLOOR((time+0.5*deltat)/dt_field) > FLOOR((time-0.5*deltat)/dt_field)) .AND. (time>0) ) THEN
-     WRITE(istring,*) FLOOR(time/dt_save)
+     WRITE(istring,*) FLOOR(time/dt_field)
      IF (has_terminal) WRITE(*,*) "Writing Dati.cart."//TRIM(ADJUSTL(istring))//".out at time ", time
      filename="Dati.cart."//TRIM(ADJUSTL(istring))//".out"; CALL save_restart_file(filename)
    END IF

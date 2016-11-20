@@ -22,7 +22,7 @@ PROGRAM channel
   REAL timei,timee
 #endif
   ! Stats
-  INTEGER(C_SIZE_T) :: istep, nstats=20, istats=0
+  INTEGER(C_SIZE_T) :: nstats=20, istats=0
   LOGICAL :: io
   REAL(C_DOUBLE), allocatable :: localstats(:,:), globalstats(:,:)
   REAL(C_DOUBLE) :: c
@@ -40,6 +40,7 @@ PROGRAM channel
   CALL setup_derivatives()
   CALL setup_boundary_conditions()
   CALL read_restart_file()
+  IF (.NOT. time_from_restart) CALL read_dnsin() 
 
   ! Allocate memory for stats
   ALLOCATE(localstats(-1:ny+1,1:5),globalstats(-1:ny+1,1:5))
@@ -67,6 +68,7 @@ IF (has_terminal) THEN
   WRITE(*,"(A,F6.4,A,F6.4,A,F8.6)") "   alfa0 =",alfa0,"       beta0 =",beta0,"   ni =",ni
   WRITE(*,"(A,F6.4,A,F6.4)") "   meanpx =",meanpx,"      meanpz =",meanpz
   WRITE(*,"(A,F6.4,A,F6.4)") "   meanflowx =",meanflowx, "   meanflowz =", meanflowz
+  WRITE(*,"(A,I6,A,L1)"   ) "   nsteps =",nstep, "   time_from_restart =", time_from_restart
   WRITE(*,*) " "
 END IF
 
@@ -76,7 +78,7 @@ END IF
   END DO
   ! Time loop
   CALL outstats()
-  timeloop: DO WHILE (time<t_max-deltat/2.0)
+  timeloop: DO WHILE ((time<t_max-deltat/2.0) .AND. (istep<nstep))
 #ifdef chron
     CALL CPU_TIME(timei)
 #endif
@@ -92,16 +94,15 @@ END IF
     IF (has_terminal) WRITE(*,*) timee-timei
 #endif
     ! Compute statistics
-    istep=istep+1
     IF (MOD(istep,nstats)==0) THEN
       localstats=0; istats=istats+1
-      IF (has_terminal) localstats(:,1)=localstats(:,1)+dreal(V(:,0,0,1))  ! U
+      IF (has_terminal) localstats(:,1)=localstats(:,1)+dreal(V(:,0,0,1))
       DO ix=nx0,nxN
         c = MERGE(1.0d0,2.0d0,ix==0) 
-        localstats(:,5) = localstats(:,5) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,2)),2)  ! uv
-        localstats(:,2) = localstats(:,2) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,1)),2)  ! uu
-        localstats(:,3) = localstats(:,3) +c*SUM(V(:,:,ix,2)*CONJG(V(:,:,ix,2)),2)  ! vv
-        localstats(:,4) = localstats(:,4) +c*SUM(V(:,:,ix,3)*CONJG(V(:,:,ix,3)),2)  ! ww
+        localstats(:,5) = localstats(:,5) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,2)),2)
+        localstats(:,2) = localstats(:,2) +c*SUM(V(:,:,ix,1)*CONJG(V(:,:,ix,1)),2)
+        localstats(:,3) = localstats(:,3) +c*SUM(V(:,:,ix,2)*CONJG(V(:,:,ix,2)),2)
+        localstats(:,4) = localstats(:,4) +c*SUM(V(:,:,ix,3)*CONJG(V(:,:,ix,3)),2)
       END DO
       IF (has_terminal) THEN
         CALL MPI_Reduce(MPI_IN_PLACE,localstats,(ny+3)*5,MPI_DOUBLE_PRECISION,MPI_SUM,0,MPI_COMM_WORLD)
@@ -112,6 +113,8 @@ END IF
         globalstats=globalstats+localstats; WRITE(102,POS=1) istats,globalstats/istats
       END IF
     END IF
+    ! Increment number of steps
+    istep=istep+1
   END DO timeloop
 
   IF (has_terminal) CLOSE(102)
